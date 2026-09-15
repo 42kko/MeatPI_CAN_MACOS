@@ -79,6 +79,43 @@ meatcan send -h
 
 연속 송신은 CAN 버스 점유율을 높일 수 있습니다. 테스트 버스에서 시작하고 `-i`로 필요한 간격을 지정하세요.
 
+### Bitrate 탐색
+
+`scan`은 listen-only 모드로 후보 bitrate를 하나씩 적용하고 정상 CAN 프레임이 수신되는 속도를 찾습니다. 탐색 중에는 송신, ACK, Error Frame을 보내지 않습니다. `meatcan up` 상태에서는 실행할 수 없으므로 먼저 `meatcan down`을 실행하세요.
+
+```sh
+# 관리 프로세스가 실행 중이라면 먼저 종료
+meatcan down
+
+# 기본 후보 전체 탐색
+meatcan scan
+
+# 지정한 후보만 탐색
+meatcan scan --rates 125k,250k,500k
+
+# 한 개의 후보를 3초 동안 확인
+meatcan scan --rate 500k --timeout 3s
+
+# 한 프레임만 받아도 후보로 확정
+meatcan scan --rate 25k --min-frames 1
+
+# scan 전용 도움말
+meatcan scan -h
+```
+
+기본 후보는 `10k, 20k, 25k, 50k, 100k, 125k, 250k, 500k, 800k, 1m` 순서입니다. 기본 수신 시간은 후보당 1초이고, 유효한 프레임 2개를 받으면 첫 번째 일치 속도를 출력하고 종료합니다. `--rates` 또는 `--rate`를 지정하면 기본 목록 대신 지정한 후보를 사용합니다.
+
+- `-r, --rates <list>`: 쉼표로 구분한 후보를 지정합니다.
+- `--rate <rate>`: 후보 하나를 추가합니다. 반복해 사용할 수 있습니다.
+- `-t, --timeout <time>`: 후보당 수신 시간입니다. `3s`, `500ms`, `500000us`처럼 양의 정수와 단위를 지정하며, 단위가 없으면 ms입니다. 최대 24시간입니다.
+- `-m, --min-frames <count>`: bitrate 확정에 필요한 유효 프레임 수입니다.
+
+상대 노드가 실제로 프레임을 송신하고 있어야 탐색할 수 있습니다. listen-only인 MeatPi는 ACK를 주지 않으므로, 송신 노드와 ACK를 줄 다른 정상 노드가 이미 통신 중인 버스에서 탐색하는 것이 좋습니다. 송신기가 MeatPi만을 상대하면 ACK 부재에 따른 재전송·오류 상태가 탐색 결과에 영향을 줄 수 있습니다.
+
+메시지 주기가 길면 `--timeout`을 늘리세요. 배선, 종단저항, CAN H/L 문제로 검출에 실패할 수 있으며, 미검출 결과만으로 bitrate 불일치를 확정할 수 없습니다. `--min-frames`는 서로 다른 메시지 개수가 아닌 유효 프레임 수신 횟수이며, 탐색 성공도 장시간 통신 품질을 보장하지 않습니다.
+
+탐색은 장치를 직접 열며 daemon이나 다른 scan과 동시에 실행할 수 없습니다. USB 장치가 없거나 후보 속도를 정확히 설정할 수 없으면 오류로 종료합니다. USB 초기화 시간은 `--timeout`에 포함되지 않으며, 진행 중인 USB 읽기로 수신 시간이 약 10 ms 늘어날 수 있습니다. 성공은 종료 코드 `0`, 미검출·오류는 `1`, `Ctrl+C` 중단은 `130`입니다. 종료 시 CAN을 정지하며, 검출된 속도로 자동 시작하지 않습니다. 출력된 `meatcan up --bitrate ...` 명령으로 일반 송수신을 시작하세요.
+
 `State waiting`, `Adapter waiting`은 USB 장치 연결 또는 초기화 대기, `State ready`, `Adapter connected`는 USB/CAN 초기화 완료를 뜻합니다. `down`은 끄기 직전의 state, adapter, bitrate, 송수신 프레임 수와 마지막 오류를 출력합니다. `ready`는 선로의 정상 상태나 상대 연결까지 보장하지는 않습니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
 
 ## 동작 구조
@@ -87,6 +124,9 @@ meatcan send -h
 meatcan dump ── 수신 구독 ──┐
                            ├── 관리 프로세스 ── libusb ── MeatPi
 meatcan send ── 송신 요청 ──┘
+
+# 관리 프로세스가 정지한 상태에서만 실행
+meatcan scan ── libusb (listen-only) ── MeatPi
 ```
 
 관리 프로세스 하나가 USB 장치를 소유합니다. `dump`와 `send`를 여러 터미널에서 사용할 수 있으며 `dump`를 종료해도 CAN은 유지됩니다. `down`이 CAN을 정지합니다. 일반 CAN 모드에서는 수신 구독자가 없어도 컨트롤러가 정상 프레임에 ACK를 응답할 수 있습니다.

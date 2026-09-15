@@ -5,14 +5,27 @@
 ## 자동 검증
 
 - CMake Release 빌드 성공, 최신 CTest 3/3 통과
-- CLI/daemon 통합 검사 153개 통과: 시작·종료, 동시 클라이언트, 반복·연속·간격 송신, `Ctrl+C` 종료, 입력 검증, 지연/누락/불일치 에코
-- USB shim 초기화·정리 회귀 검사 11개 통과
-- 별도 프로토콜 검사 31개 통과
+- CLI/daemon 통합 검사 157개 통과: 시작·종료, 동시 클라이언트, 반복·연속·간격 송신, `Ctrl+C` 종료, 입력 검증, 지연/누락/불일치 에코
+- USB shim 초기화·정리·scan 회귀 검사 67개 통과
+- 별도 프로토콜 검사 통과 (현재 실행 출력은 개수를 표시하지 않음)
 - Mock 12,000프레임에서 송수신 카운터 일치, 느린 구독자 분리 후 daemon 응답 유지
 - 발견된 속도 정수 오버플로 및 종료된 클라이언트 fd 재사용 문제는 수정 후 재검증
 - Homebrew Formula Ruby 구문 및 릴리스 SHA-256 갱신 스크립트 검사 통과
 - 실제 custom tap 연결 및 Homebrew HEAD 설치 성공 (`HEAD-6b642b4`)
 - `brew test 42kko/meatcan/meatcan` 통과, `/opt/homebrew/bin/meatcan --version` 확인
+
+## Bitrate scan 자동 검증
+
+최신 CTest 3/3(5.84초), CLI 157/157, USB shim 67개 검사가 통과했습니다. 자동 검사는 실장치 대신 USB shim을 사용했습니다.
+
+- 기본 후보 10개와 순서, 사용자 후보·중복 제거
+- LISTEN_ONLY 모드의 32비트 플래그 전달
+- 최소 정상 프레임 수, 오류 프레임·송신 에코·잘못된 표준 ID 제외
+- 무수신, 잘못된 속도·시간·최소 개수, listen-only 미지원 오류
+- 후보별 CAN 종료, 동시 scan 소유권 잠금
+- SIGTERM 중단 시 종료 코드 130, 장치 정리와 잠금 재사용
+
+실제 25 kbps CAN 버스에서 `meatcan scan --rate 25k --timeout 10s --min-frames 1`을 실행해 정상 프레임 1개를 수신하고 25,000 bps를 검출했습니다. 탐색 종료 후 같은 장치를 `meatcan up --bitrate 25k`로 다시 열었으며 `state=ready`, `adapter=connected`를 확인했습니다. 희소 트래픽에서 탐색 경로를 확인하기 위해 임계값을 1로 낮춘 검사이며, 기본값은 오검출 가능성을 줄이기 위해 2프레임입니다.
 
 ## 실제 장치: 25 kbps 검증 성공
 

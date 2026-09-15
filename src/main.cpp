@@ -1,4 +1,5 @@
 #include "protocol.hpp"
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -18,6 +19,7 @@
 #include <unistd.h>
 using namespace meatcan;
 using Clock = std::chrono::steady_clock;
+static constexpr uint32_t listen_only_flag = 1u;
 static volatile sig_atomic_t stopping = 0;
 static void stop_signal(int) { stopping = 1; }
 static std::string directory() {
@@ -136,7 +138,7 @@ public:
     claimed = false;
     started = false;
   }
-  bool open(uint32_t rate) {
+  bool open(uint32_t rate, uint32_t mode_flags = 0) {
     libusb_device **list = nullptr;
     ssize_t count = libusb_get_device_list(ctx, &list);
     usb_check(int(count), "USB enumerate");
@@ -182,6 +184,9 @@ public:
       std::array<uint32_t, 10> caps{};
       for (int i = 0; i < 10; i++)
         caps[i] = get32(cb + 4 * i);
+      if (mode_flags & ~caps[0])
+        throw std::runtime_error(
+            "requested CAN mode is not supported by the adapter");
       auto t = timing(caps, rate);
       uint8_t bt[20];
       put32(bt, 1);
@@ -192,7 +197,7 @@ public:
       control("set CAN timing", 0x41, 1, bt, 20);
       uint8_t mode[8]{};
       put32(mode, 1);
-      put32(mode + 4, 0);
+      put32(mode + 4, mode_flags);
       control("start CAN", 0x41, 2, mode, 8);
       started = true;
       return true;
@@ -596,21 +601,22 @@ static int request(const std::string &d, const std::string &cmd,
     line.clear();
   }
 }
-static uint64_t send_count(const std::string &value) {
+static uint64_t positive_integer(const std::string &value,
+                                 const std::string &name) {
   if (value.empty() ||
       value.find_first_not_of("0123456789") != std::string::npos)
-    throw std::runtime_error("repeat count must be a positive integer");
+    throw std::runtime_error(name + " must be a positive integer");
   uint64_t count = 0;
   try {
     count = std::stoull(value);
   } catch (const std::exception &) {
-    throw std::runtime_error("repeat count is too large");
+    throw std::runtime_error(name + " is too large");
   }
   if (!count)
-    throw std::runtime_error("repeat count must be at least 1");
+    throw std::runtime_error(name + " must be at least 1");
   return count;
 }
-static uint64_t send_interval(std::string value) {
+static uint64_t time_value(std::string value, const std::string &name) {
   uint64_t multiplier = 1000; // A bare value is milliseconds.
   if (value.size() >= 2 && value.substr(value.size() - 2) == "us") {
     multiplier = 1;
@@ -623,16 +629,16 @@ static uint64_t send_interval(std::string value) {
   }
   if (value.empty() ||
       value.find_first_not_of("0123456789") != std::string::npos)
-    throw std::runtime_error("interval must look like 100ms, 1s, or 500us");
+    throw std::runtime_error(name + " must look like 100ms, 1s, or 500us");
   uint64_t amount = 0;
   try {
     amount = std::stoull(value);
   } catch (const std::exception &) {
-    throw std::runtime_error("interval is too large");
+    throw std::runtime_error(name + " is too large");
   }
   constexpr uint64_t maximum = 24ull * 60 * 60 * 1000000;
   if (amount > maximum / multiplier)
-    throw std::runtime_error("interval must not exceed 24 hours");
+    throw std::runtime_error(name + " must not exceed 24 hours");
   return amount * multiplier;
 }
 static std::string interval_text(uint64_t microseconds) {
@@ -678,10 +684,10 @@ static int send_command(const std::string &d, int argc, char **argv) {
   for (int i = 2; i < argc; i++) {
     std::string arg = argv[i];
     if ((arg == "-r" || arg == "--repeat") && i + 1 < argc) {
-      count = send_count(argv[++i]);
+      count = positive_integer(argv[++i], "repeat count");
       count_set = true;
     } else if ((arg == "-i" || arg == "--interval") && i + 1 < argc) {
-      interval = send_interval(argv[++i]);
+      interval = time_value(argv[++i], "interval");
       interval_set = true;
     } else if (arg == "-c" || arg == "--continuous") {
       continuous = true;
@@ -739,6 +745,163 @@ static int send_command(const std::string &d, int argc, char **argv) {
   }
   return 0;
 }
+static void append_rates(const std::string &value,
+                         std::vector<uint32_t> &rates) {
+  size_t begin = 0;
+  while (begin <= value.size()) {
+    auto end = value.find(',', begin);
+    auto item = value.substr(begin, end - begin);
+    if (item.empty())
+      throw std::runtime_error(
+          "rates must be a comma-separated list such as 125k,250k,500k");
+    auto rate = bitrate(item);
+    if (std::find(rates.begin(), rates.end(), rate) == rates.end())
+      rates.push_back(rate);
+    if (end == std::string::npos)
+      break;
+    begin = end + 1;
+  }
+}
+static void scan_help() {
+  std::cout << "MeatCAN bitrate scan\n\n"
+               "Usage\n"
+               "  meatcan scan [options]\n\n"
+               "Options\n"
+               "  -r, --rates <list>       Candidate rates, comma-separated\n"
+               "      --rate <rate>        Add one candidate rate\n"
+               "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
+               "  -m, --min-frames <count> Valid frames required (default: 2)\n"
+               "  -h, --help               Show this help\n\n"
+               "Default rates\n"
+               "  10k,20k,25k,50k,100k,125k,250k,500k,800k,1m\n\n"
+               "Examples\n"
+               "  meatcan scan\n"
+               "  meatcan scan --rates 125k,250k,500k\n"
+               "  meatcan scan --rate 500k -t 3s\n";
+}
+// Share the daemon's ownership lock, including between candidate bitrates.
+// The socket check alone would race daemon startup or a second scan.
+class ScanLock {
+  int fd = -1;
+
+public:
+  explicit ScanLock(const std::string &d) {
+    fd = ::open((d + "/daemon.lock").c_str(), O_CREAT | O_RDWR | O_NOFOLLOW,
+                0600);
+    if (fd < 0)
+      throw std::runtime_error("cannot open CAN ownership lock");
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
+      close(fd);
+      fd = -1;
+      throw std::runtime_error("CAN is already in use by a daemon or scan; run "
+                               "meatcan down or wait for the scan");
+    }
+  }
+  ~ScanLock() {
+    if (fd >= 0) {
+      flock(fd, LOCK_UN);
+      close(fd);
+    }
+  }
+  ScanLock(const ScanLock &) = delete;
+  ScanLock &operator=(const ScanLock &) = delete;
+};
+static bool valid_scan_frame(const Frame &frame) {
+  if (frame.echo != no_echo || (frame.id & 0x20000000u))
+    return false;
+  // A standard frame cannot contain arbitration bits outside its 11-bit ID.
+  return (frame.id & 0x80000000u) || ((frame.id & 0x1fffffffu) <= 0x7ffu);
+}
+static int scan_command(const std::string &d, int argc, char **argv) {
+  std::vector<uint32_t> rates;
+  uint64_t timeout = 1000000;
+  uint64_t minimum = 2;
+  bool custom_rates = false;
+  for (int i = 2; i < argc; i++) {
+    std::string arg = argv[i];
+    if ((arg == "-r" || arg == "--rates") && i + 1 < argc) {
+      if (!custom_rates) {
+        rates.clear();
+        custom_rates = true;
+      }
+      append_rates(argv[++i], rates);
+    } else if (arg == "--rate" && i + 1 < argc) {
+      if (!custom_rates) {
+        rates.clear();
+        custom_rates = true;
+      }
+      auto rate = bitrate(argv[++i]);
+      if (std::find(rates.begin(), rates.end(), rate) == rates.end())
+        rates.push_back(rate);
+    } else if ((arg == "-t" || arg == "--timeout") && i + 1 < argc) {
+      timeout = time_value(argv[++i], "scan timeout");
+      if (!timeout)
+        throw std::runtime_error("scan timeout must be greater than zero");
+    } else if ((arg == "-m" || arg == "--min-frames") && i + 1 < argc) {
+      minimum = positive_integer(argv[++i], "minimum frame count");
+    } else {
+      throw std::runtime_error("unknown or incomplete scan option: " + arg);
+    }
+  }
+  if (!custom_rates)
+    for (auto value : {"10k", "20k", "25k", "50k", "100k", "125k", "250k",
+                       "500k", "800k", "1m"})
+      append_rates(value, rates);
+  if (rates.empty())
+    throw std::runtime_error("at least one scan rate is required");
+
+  int existing = connect_to(d);
+  if (existing >= 0) {
+    close(existing);
+    throw std::runtime_error(
+        "CAN is already up; run meatcan down before scanning");
+  }
+
+  ScanLock ownership(d);
+  std::cout << "MeatCAN bitrate scan\n\n"
+            << "  Mode        listen-only\n"
+            << "  Candidates  " << rates.size() << '\n'
+            << "  Window      " << interval_text(timeout) << " per bitrate\n"
+            << "  Required    " << minimum << " valid frames\n\n";
+  signal(SIGINT, stop_signal);
+  signal(SIGTERM, stop_signal);
+  Usb usb;
+  for (auto rate : rates) {
+    if (stopping)
+      break;
+    if (!usb.open(rate, listen_only_flag))
+      throw std::runtime_error("MeatPi USB adapter not found (1209:2323)");
+    uint64_t frames = 0;
+    auto deadline = Clock::now() + std::chrono::microseconds(timeout);
+    while (!stopping && Clock::now() < deadline && frames < minimum) {
+      for (const auto &frame : usb.read())
+        if (valid_scan_frame(frame))
+          frames++;
+    }
+    usb.disconnect();
+    std::cout << "  " << grouped(std::to_string(rate)) << " bps  ";
+    if (frames)
+      std::cout << frames << " valid frame" << (frames == 1 ? "" : "s");
+    else
+      std::cout << "no traffic";
+    std::cout << '\n';
+    if (frames >= minimum) {
+      std::cout << "\nBitrate detected\n\n"
+                << "  Bitrate     " << grouped(std::to_string(rate)) << " bps\n"
+                << "  Frames      " << frames << '\n'
+                << "  Start       meatcan up --bitrate " << rate << '\n';
+      return 0;
+    }
+  }
+  if (stopping) {
+    std::cout << "\nMeatCAN scan stopped\n";
+    return 130;
+  }
+  std::cout << "\nNo bitrate detected\n\n"
+            << "  Check that another CAN node is actively transmitting.\n"
+            << "  Increase --timeout for infrequent traffic.\n";
+  return 1;
+}
 static void help() {
   std::cout
       << "MeatCAN 0.1.0\n"
@@ -749,6 +912,7 @@ static void help() {
          "  up       Start CAN and connect to the adapter\n"
          "  dump     Monitor received CAN frames\n"
          "  send     Send, repeat, or continuously transmit a frame\n"
+         "  scan     Detect an active CAN bitrate in listen-only mode\n"
          "  status   Show adapter and traffic status\n"
          "  down     Stop CAN and the background daemon\n\n"
          "Options\n"
@@ -761,10 +925,16 @@ static void help() {
          "  -c, --continuous        Send until Ctrl+C\n"
          "  -i, --interval <time>   Delay between frames (500us, 100ms, 1s)\n"
          "  -q, --quiet             Suppress successful output\n\n"
+         "Scan options\n"
+         "  -r, --rates <list>       Candidate rates, comma-separated\n"
+         "      --rate <rate>        Add one candidate rate\n"
+         "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
+         "  -m, --min-frames <count> Valid frames required (default: 2)\n\n"
          "Examples\n"
          "  meatcan up --bitrate 25k\n"
          "  meatcan send 123#01020304\n"
          "  meatcan send -r 10 -i 100ms 123#01020304\n"
+         "  meatcan scan --rates 125k,250k,500k\n"
          "  meatcan dump\n"
          "  meatcan down\n";
 }
@@ -773,17 +943,24 @@ int main(int argc, char **argv) {
   try {
     bool wants_help = argc < 2 || (argc >= 2 && std::string(argv[1]) == "help");
     bool wants_send_help = false;
+    bool wants_scan_help = false;
     for (int i = 1; i < argc; i++) {
       std::string arg = argv[i];
       if (arg == "-h" || arg == "--help") {
         if (argc >= 2 && std::string(argv[1]) == "send")
           wants_send_help = true;
+        else if (argc >= 2 && std::string(argv[1]) == "scan")
+          wants_scan_help = true;
         else
           wants_help = true;
       }
     }
     if (wants_send_help) {
       send_help();
+      return 0;
+    }
+    if (wants_scan_help) {
+      scan_help();
       return 0;
     }
     if (wants_help) {
@@ -868,6 +1045,8 @@ int main(int argc, char **argv) {
     if (cmd == "send") {
       return send_command(d, argc, argv);
     }
+    if (cmd == "scan")
+      return scan_command(d, argc, argv);
     if (argc != 2)
       throw std::runtime_error("unexpected arguments");
     if (cmd == "dump")

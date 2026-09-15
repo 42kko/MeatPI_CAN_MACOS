@@ -45,12 +45,26 @@ try:
         and '-i, --interval <time>' in general_help.stdout
         and '-q, --quiet' in general_help.stdout,
     )
+    check(
+        'general help lists scan options',
+        'Scan options\n' in general_help.stdout
+        and '-r, --rates <list>' in general_help.stdout
+        and '-t, --timeout <time>' in general_help.stdout
+        and '-m, --min-frames <count>' in general_help.stdout,
+    )
     check('short help', run('-h').returncode == 0)
     check('command short help', run('up', '-h').returncode == 0)
     check(
         'send short help',
         'MeatCAN send\n\n' in run('send', '-h').stdout
         and '--continuous' in run('send', '-h').stdout,
+    )
+    scan_help = run('scan', '-h')
+    check(
+        'scan short help',
+        scan_help.returncode == 0
+        and 'MeatCAN bitrate scan\n\n' in scan_help.stdout
+        and '--rates' in scan_help.stdout,
     )
     check('version', run('--version').stdout.strip() == 'meatcan 0.1.0')
     check('absent daemon', run('status').returncode != 0)
@@ -71,6 +85,7 @@ try:
         and '  State       ready' in run('status').stdout,
     )
     check('duplicate up', run('up', '--mock').returncode != 0)
+    check('scan rejects active daemon', run('scan', '--rate', '25k').returncode != 0)
     subscribers = [raw(b'DUMP\n') for i in range(2)]
     for s in subscribers:
         check('dump handshake', s.recv(20) == b'OK\n')
