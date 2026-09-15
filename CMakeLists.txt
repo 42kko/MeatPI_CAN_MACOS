@@ -27,3 +27,13 @@ if(BUILD_TESTING)
     set_tests_properties(cli_integration PROPERTIES TIMEOUT 60)
   endif()
 endif()
+
+if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+  # Links a test-only libusb replacement; cannot touch real USB hardware.
+  add_executable(meatcan_usb_test src/main.cpp tests/usb_shim.cpp)
+  target_include_directories(meatcan_usb_test PRIVATE include)
+  target_include_directories(meatcan_usb_test SYSTEM PRIVATE ${LIBUSB_INCLUDE_DIR})
+  target_compile_options(meatcan_usb_test PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME usb_initialization COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/usb_initialization.py $<TARGET_FILE:meatcan_usb_test>)
+  set_tests_properties(usb_initialization PROPERTIES TIMEOUT 20)
+endif()

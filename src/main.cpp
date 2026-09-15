@@ -62,15 +62,18 @@ class Usb {
   libusb_context *ctx = nullptr;
   libusb_device_handle *h = nullptr;
   bool claimed = false;
+  bool started = false;
   int packet = 0;
-  void control(uint8_t type, uint8_t req, uint8_t *b, uint16_t n) {
-    int r = libusb_control_transfer(h, type, req, 0, 0, b, n, 500);
+  void control(const char *stage, uint8_t type, uint8_t req, uint8_t *b,
+               uint16_t n) {
+    int r = libusb_control_transfer(h, type, req, 0, 0, b, n, 1000);
     if (r < 0)
-      throw std::runtime_error("USB control request=" + std::to_string(req) +
-                               " type=" + std::to_string(type) + ": " +
-                               libusb_error_name(r));
+      throw std::runtime_error(
+          std::string(stage) + " (USB control request=" + std::to_string(req) +
+          " type=" + std::to_string(type) + "): " + libusb_error_name(r));
     if (r != n)
-      throw std::runtime_error("short USB control transfer");
+      throw std::runtime_error(std::string(stage) +
+                               ": short USB control transfer");
   }
 
 public:
@@ -83,14 +86,17 @@ public:
   void disconnect() {
     if (h) {
       if (claimed) {
-        uint8_t b[8]{};
-        libusb_control_transfer(h, 0x41, 2, 0, 0, b, 8, 100);
+        if (started) {
+          uint8_t b[8]{};
+          libusb_control_transfer(h, 0x41, 2, 0, 0, b, 8, 1000);
+        }
         libusb_release_interface(h, 0);
       }
       libusb_close(h);
     }
     h = nullptr;
     claimed = false;
+    started = false;
   }
   bool open(uint32_t rate) {
     libusb_device **list = nullptr;
@@ -130,25 +136,11 @@ public:
       usb_check(packet, "IN endpoint packet size");
       if (packet < 20 || packet > 4096)
         throw std::runtime_error("unexpected endpoint packet size");
-      uint8_t mode[8]{};
-      control(0x41, 2, mode, 8); // channel reset, never USB bus reset
-      // Drain stale endpoint data with packet-aligned buffers before format
-      // negotiation.
-      std::vector<uint8_t> stale(packet);
-      for (int i = 0; i < 64; i++) {
-        int n = 0;
-        int rc = libusb_bulk_transfer(h, 0x81, stale.data(), packet, &n, 2);
-        if (rc == LIBUSB_ERROR_TIMEOUT)
-          break;
-        usb_check(rc, "drain stale RX");
-        if (i == 63)
-          throw std::runtime_error("stale RX did not drain after channel stop");
-      }
-      uint8_t host[4];
-      put32(host, 0x0000beefu);
-      control(0x41, 0, host, 4);
+      // Match the working Ollie Python initialization: capabilities, timing,
+      // then START. That path omits HOST_FORMAT and the pre-start channel
+      // reset / endpoint drain. In particular, never reset the USB bus.
       uint8_t cb[40];
-      control(0xc1, 4, cb, 40);
+      control("read CAN capabilities", 0xc1, 4, cb, 40);
       std::array<uint32_t, 10> caps{};
       for (int i = 0; i < 10; i++)
         caps[i] = get32(cb + 4 * i);
@@ -159,10 +151,12 @@ public:
       put32(bt + 8, t.tseg2);
       put32(bt + 12, 1);
       put32(bt + 16, t.brp);
-      control(0x41, 1, bt, 20);
+      control("set CAN timing", 0x41, 1, bt, 20);
+      uint8_t mode[8]{};
       put32(mode, 1);
       put32(mode + 4, 0);
-      control(0x41, 2, mode, 8);
+      control("start CAN", 0x41, 2, mode, 8);
+      started = true;
       return true;
     } catch (...) {
       disconnect();
