@@ -38,18 +38,23 @@ meatcan status
 # 터미널 1: 수신. Ctrl+C는 구독만 종료합니다.
 meatcan dump
 
-# 터미널 2: 한 프레임 송신. 성공하면 조용히 종료합니다.
+# 터미널 2: 한 프레임 송신. 성공하면 프레임을 확인해 줍니다.
 meatcan send 123#01020304
 
 # CAN 컨트롤러와 백그라운드 프로세스 종료
 meatcan down
+
+# 도움말
+meatcan -h
 ```
 
-`up`의 기본 속도는 **25 kbps**입니다. `25k`, `250k`, `500k`, `1m`처럼 지정할 수 있으며 장치의 클럭·타이밍 범위에서 만들 수 없는 속도는 오류로 보고합니다. `up`은 daemon 시작 후 `state`, `adapter`, bitrate, 송수신 카운터와 마지막 오류를 바로 출력합니다. 속도를 바꾸려면 `down` 후 새 속도로 `up`을 실행하세요.
+`up`의 기본 속도는 **25 kbps**입니다. `25k`, `250k`, `500k`, `1m`처럼 지정할 수 있으며 장치의 클럭·타이밍 범위에서 만들 수 없는 속도는 오류로 보고합니다. `up`은 daemon 시작 후 연결 상태, backend, bitrate, 송수신 카운터와 마지막 오류를 정렬된 형식으로 바로 출력합니다. 속도를 바꾸려면 `down` 후 새 속도로 `up`을 실행하세요.
 
 `send`는 16진수 CAN ID와 짝수 길이의 16진수 데이터(최대 16자리)를 받습니다. 빈 데이터는 `123#`입니다. 확장 ID 예시는 `1ABCDEFF#01020304`입니다. 송신은 장치의 고유 에코를 기다리며 성공은 종료 코드 `0`, 오류·타임아웃은 `1`입니다. 에코 타임아웃은 상대 애플리케이션의 처리 여부를 뜻하지 않으며, 완료가 불명확한 메시지를 자동 재전송하지 않습니다.
 
-`state=waiting adapter=waiting`은 USB 장치 연결 또는 초기화 대기, `state=ready adapter=connected`는 USB/CAN 초기화 완료를 뜻합니다. `down`은 끄기 직전의 state, adapter, bitrate, `rx`, `tx`, `last_error`를 출력합니다. `ready`는 선로의 정상 상태나 상대 연결까지 보장하지는 않습니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
+송신이 성공하면 `MeatCAN TX complete`과 에코가 확인된 프레임을 출력합니다.
+
+`State waiting`, `Adapter waiting`은 USB 장치 연결 또는 초기화 대기, `State ready`, `Adapter connected`는 USB/CAN 초기화 완료를 뜻합니다. `down`은 끄기 직전의 state, adapter, bitrate, 송수신 프레임 수와 마지막 오류를 출력합니다. `ready`는 선로의 정상 상태나 상대 연결까지 보장하지는 않습니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
 
 ## 동작 구조
 

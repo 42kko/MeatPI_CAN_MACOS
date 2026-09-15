@@ -35,27 +35,38 @@ def raw(line):
 
 try:
     check('help', run('--help').returncode == 0)
+    check('short help', run('-h').returncode == 0)
+    check('command short help', run('up', '-h').returncode == 0)
     check('version', run('--version').stdout.strip() == 'meatcan 0.1.0')
     check('absent daemon', run('status').returncode != 0)
     check('overflow bitrate rejected', run('up', '--mock', '--bitrate', '18446744073709552k').returncode != 0)
     up = run('up', '--mock', '--bitrate', '500k')
     check('up mock', up.returncode == 0)
-    check('up reports daemon', 'meatcan daemon started (MOCK)' in up.stdout)
+    check('up heading', 'MeatCAN started\n\n' in up.stdout)
     check(
         'up reports connected state',
-        'state=ready adapter=connected bitrate=500000 mock=yes' in up.stdout,
+        '  State       ready' in up.stdout
+        and '  Adapter     connected' in up.stdout
+        and '  Backend     mock' in up.stdout
+        and '  Bitrate     500,000 bps' in up.stdout,
     )
     check(
         'ready status',
-        'state=ready adapter=connected bitrate=500000 mock=yes'
-        in run('status').stdout,
+        'MeatCAN status\n\n' in run('status').stdout
+        and '  State       ready' in run('status').stdout,
     )
     check('duplicate up', run('up', '--mock').returncode != 0)
     subscribers = [raw(b'DUMP\n') for i in range(2)]
     for s in subscribers:
         check('dump handshake', s.recv(20) == b'OK\n')
     sent = run('send', '123#01020304')
-    check('send quiet', sent.returncode == 0 and not sent.stdout and not sent.stderr)
+    check(
+        'send confirmation',
+        sent.returncode == 0
+        and 'MeatCAN TX complete\n\n' in sent.stdout
+        and '  Frame       123#01020304' in sent.stdout
+        and not sent.stderr,
+    )
     for s in subscribers:
         check('dump frame', b'can0 123#01020304' in s.recv(4096))
         s.close()
@@ -64,7 +75,7 @@ try:
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         sends = list(ex.map(lambda i: run('send', f'{i:03X}#0102'), range(40)))
     check('40 simultaneous sends', all((r.returncode == 0 for r in sends)))
-    check('TX counters exact', 'tx=41 ' in run('status').stdout)
+    check('TX counters exact', '|  TX 41' in run('status').stdout)
     for i in range(80):
         s = raw(b'DUMP\n')
         check('subscriber churn handshake', s.recv(20) == b'OK\n')
@@ -80,13 +91,15 @@ try:
     check('down', down.returncode == 0)
     check(
         'down reports previous state',
-        'CAN stopped: previous_state=ready adapter=connected bitrate=500000'
-        in down.stdout,
+        'MeatCAN stopped\n\n' in down.stdout
+        and '  Previous    ready' in down.stdout
+        and '  Adapter     connected' in down.stdout
+        and '  Bitrate     500,000 bps' in down.stdout,
     )
     time.sleep(0.1)
     check('socket removed', not os.path.exists(runtime + '/daemon.sock'))
     check('restart', run('up', '--mock', '--bitrate', '25k').returncode == 0)
-    check('restart resets counters', 'rx=0 tx=0' in run('status').stdout)
+    check('restart resets counters', 'Frames      RX 0  |  TX 0' in run('status').stdout)
     check('down again', run('down').returncode == 0)
     time.sleep(0.1)
     for mode, expected in [('drop', 'TX echo timeout'), ('mismatch', 'mismatched TX echo')]:
@@ -94,7 +107,7 @@ try:
         check(mode + ' up', run('up', '--mock').returncode == 0)
         failed = run('send', '123#0102')
         check(mode + ' send fails', failed.returncode != 0 and expected in failed.stderr)
-        check(mode + ' no false completion', 'tx=0 ' in run('status').stdout)
+        check(mode + ' no false completion', '|  TX 0' in run('status').stdout)
         check(mode + ' down', run('down').returncode == 0)
         time.sleep(0.1)
     env['MEATCAN_MOCK_ECHO'] = 'delay'
@@ -106,7 +119,7 @@ try:
     time.sleep(0.025)
     orphan.close()
     for i in range(20):
-        check('orphan does not corrupt status', 'state=ready' in run('status').stdout)
+        check('orphan does not corrupt status', 'State       ready' in run('status').stdout)
     check('subsequent delayed send', run('send', '456#0304').returncode == 0)
     check('delay down', run('down').returncode == 0)
     print(json.dumps({'checks': len(results), 'passed': sum((v for _, v in results)), 'results': results}, indent=2))

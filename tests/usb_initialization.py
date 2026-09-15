@@ -80,7 +80,9 @@ try:
         timeout=5,
     )
     assert up.returncode == 0, up.stderr
-    assert 'state=waiting adapter=waiting bitrate=25000' in up.stdout, up.stdout
+    assert 'State       waiting' in up.stdout, up.stdout
+    assert 'Adapter     waiting' in up.stdout, up.stdout
+    assert 'Bitrate     25,000 bps' in up.stdout, up.stdout
     checks += 2
     down = subprocess.run(
         [binary, 'down'],
@@ -90,7 +92,9 @@ try:
         timeout=5,
     )
     assert down.returncode == 0, down.stderr
-    assert 'previous_state=waiting adapter=waiting bitrate=25000' in down.stdout
+    assert 'MeatCAN stopped' in down.stdout
+    assert 'Previous    waiting' in down.stdout
+    assert 'Adapter     waiting' in down.stdout
     checks += 2
 finally:
     shutil.rmtree(runtime, ignore_errors=True)

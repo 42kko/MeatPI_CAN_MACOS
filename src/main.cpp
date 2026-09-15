@@ -54,6 +54,44 @@ static int connect_to(const std::string &d) {
   }
   return s;
 }
+static std::string field(const std::string &record, const std::string &name) {
+  auto marker = name + "=";
+  auto begin = record.find(marker);
+  if (begin == std::string::npos)
+    throw std::runtime_error("invalid daemon response: missing " + name);
+  begin += marker.size();
+  auto end = name == "last_error" ? std::string::npos : record.find(' ', begin);
+  return record.substr(begin, end - begin);
+}
+static std::string field_or(const std::string &record, const std::string &name,
+                            const std::string &fallback) {
+  return record.find(name + "=") == std::string::npos ? fallback
+                                                      : field(record, name);
+}
+static std::string grouped(std::string number) {
+  std::string result;
+  for (size_t i = 0; i < number.size(); i++) {
+    if (i && (number.size() - i) % 3 == 0)
+      result += ',';
+    result += number[i];
+  }
+  return result;
+}
+static void print_state(const std::string &heading, const std::string &record,
+                        bool previous = false) {
+  auto state = field(record, previous ? "previous_state" : "state");
+  auto mock = field_or(record, "mock", "no");
+  std::cout << heading << "\n\n"
+            << (previous ? "  Previous    " : "  State       ") << state << '\n'
+            << "  Adapter     " << field(record, "adapter") << '\n'
+            << "  Backend     " << (mock == "yes" ? "mock" : "GS USB") << '\n'
+            << "  Bitrate     " << grouped(field(record, "bitrate")) << " bps\n"
+            << "  Frames      RX " << field(record, "rx") << "  |  TX "
+            << field(record, "tx") << '\n'
+            << "  Slow clients " << field_or(record, "slow_subscribers", "0")
+            << '\n'
+            << "  Last error  " << field(record, "last_error") << '\n';
+}
 static void usb_check(int n, const char *op) {
   if (n < 0)
     throw std::runtime_error(std::string(op) + ": " + libusb_error_name(n));
@@ -324,8 +362,7 @@ static int daemon_main(const std::string &d, uint32_t rate, bool mock) {
             auto cmd = c.in.substr(0, c.in.find('\n'));
             c.in.clear();
             if (cmd == "STATUS") {
-              reply(c.fd, "OK state=" + state +
-                              " adapter=" +
+              reply(c.fd, "OK state=" + state + " adapter=" +
                               (state == "ready" ? "connected" : "waiting") +
                               " bitrate=" + std::to_string(rate) +
                               " mock=" + (mock ? "yes" : "no") + " rx=" +
@@ -339,10 +376,12 @@ static int daemon_main(const std::string &d, uint32_t rate, bool mock) {
               usb.disconnect();
               state = "stopped";
               reply(c.fd, "OK previous_state=" + previous_state +
-                              " adapter=" + previous_adapter + " bitrate=" +
-                              std::to_string(rate) + " rx=" +
-                              std::to_string(rx) + " tx=" +
-                              std::to_string(tx) + " last_error=" + last_error);
+                              " adapter=" + previous_adapter +
+                              " bitrate=" + std::to_string(rate) +
+                              " mock=" + (mock ? "yes" : "no") + " rx=" +
+                              std::to_string(rx) + " tx=" + std::to_string(tx) +
+                              " slow_subscribers=" + std::to_string(dropped) +
+                              " last_error=" + last_error);
               stopping = 1;
             } else if (cmd == "DUMP") {
               c.subscriber = true;
@@ -472,7 +511,7 @@ static int daemon_main(const std::string &d, uint32_t rate, bool mock) {
   return 0;
 }
 static int request(const std::string &d, const std::string &cmd,
-                   bool stream = false) {
+                   bool stream = false, const std::string &heading = "") {
   int fd = connect_to(d);
   if (fd < 0)
     throw std::runtime_error(
@@ -517,26 +556,33 @@ static int request(const std::string &d, const std::string &cmd,
       }
       if (!stream) {
         if (cmd == "STATUS")
-          std::cout << line.substr(3) << '\n';
+          print_state(heading.empty() ? "MeatCAN status" : heading,
+                      line.substr(3));
         else if (cmd == "DOWN") {
           auto stopped = line.substr(3);
           close(fd);
           auto socket_path = d + "/daemon.sock";
           for (int i = 0; i < 200; i++) {
-            struct stat socket_status {};
+            struct stat socket_status{};
             if (lstat(socket_path.c_str(), &socket_status) < 0 &&
                 errno == ENOENT) {
-              std::cout << "CAN stopped: " << stopped << '\n';
+              print_state("MeatCAN stopped", stopped, true);
               return 0;
             }
             usleep(10000);
           }
           throw std::runtime_error("daemon did not finish stopping");
+        } else if (cmd.rfind("SEND ", 0) == 0) {
+          std::cout << "MeatCAN TX complete\n\n"
+                    << "  Frame       " << cmd.substr(5) << '\n';
         }
         close(fd);
         return 0;
       }
       handshake = true;
+      std::cout << "MeatCAN monitor\n\n"
+                << "  State       receiving\n"
+                << "  Stop        Ctrl+C\n\n";
     } else {
       std::cout << line << std::endl;
       if (line.rfind("ERR ", 0) == 0) {
@@ -548,17 +594,37 @@ static int request(const std::string &d, const std::string &cmd,
   }
 }
 static void help() {
-  std::cout
-      << "meatcan 0.1.0 — macOS MeatPi Ollie v2 GS USB Classic CAN\nUsage:\n  "
-         "meatcan up [-b|--bitrate 25k] [--mock]\n  meatcan dump\n  meatcan "
-         "send 123#01020304\n  meatcan status\n  meatcan down\n  meatcan "
-         "--version\n--mock is a test-only loopback backend, never real "
-         "CAN.\nNormal mode acknowledges CAN even without dump subscribers.\n";
+  std::cout << "MeatCAN 0.1.0\n"
+               "macOS CLI for MeatPi Ollie v2 GS USB Classic CAN\n\n"
+               "Usage\n"
+               "  meatcan <command> [options]\n\n"
+               "Commands\n"
+               "  up       Start CAN and connect to the adapter\n"
+               "  dump     Monitor received CAN frames\n"
+               "  send     Send one frame, for example 123#01020304\n"
+               "  status   Show adapter and traffic status\n"
+               "  down     Stop CAN and the background daemon\n\n"
+               "Options\n"
+               "  -b, --bitrate <rate>   CAN bitrate for up (default: 25k)\n"
+               "      --mock             Test-only loopback backend\n"
+               "  -h, --help             Show this help\n"
+               "      --version          Show the version\n\n"
+               "Examples\n"
+               "  meatcan up --bitrate 25k\n"
+               "  meatcan send 123#01020304\n"
+               "  meatcan dump\n"
+               "  meatcan down\n";
 }
 int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   try {
-    if (argc < 2 || std::string(argv[1]) == "--help") {
+    bool wants_help = argc < 2;
+    for (int i = 1; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "-h" || arg == "--help" || arg == "help")
+        wants_help = true;
+    }
+    if (wants_help) {
       help();
       return 0;
     }
@@ -630,9 +696,7 @@ int main(int argc, char **argv) {
         int fd = connect_to(d);
         if (fd >= 0) {
           close(fd);
-          std::cout << "meatcan daemon started"
-                    << (mock ? " (MOCK)" : "") << "\n";
-          return request(d, "STATUS");
+          return request(d, "STATUS", false, "MeatCAN started");
         }
         usleep(20000);
       }
@@ -655,7 +719,7 @@ int main(int argc, char **argv) {
       return request(d, "DOWN");
     throw std::runtime_error("unknown command; use --help");
   } catch (const std::exception &e) {
-    std::cerr << "ERROR: " << e.what() << '\n';
+    std::cerr << "MeatCAN error\n\n  " << e.what() << '\n';
     return 1;
   }
 }
