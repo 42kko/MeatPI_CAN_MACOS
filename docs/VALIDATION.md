@@ -38,7 +38,7 @@ MeatPi Ollie v2 GS USB `1209:2323`의 CAN 클럭 36 MHz, BRP 1~1024, USB IN 최�
 
 정상 상태에서 시험한 소프트 USB reset은 `Entity not found`를 반환했으나 이후 configuration은 0이었고, Python에서 configuration 설정·시작·종료가 가능했습니다. 이전 정지 상태에서의 reset timeout 시험은 사용자 USB 분리와 시간이 겹쳐 복구 인과관계를 판단할 수 없습니다. 소프트 reset을 확실한 복구 방법으로 간주하지 않습니다.
 
-위 Homebrew 설치·테스트 기록은 기존 HEAD 설치본의 결과입니다. 최신 초기화 변경의 Homebrew 갱신 확인은 아직 진행 중입니다.
+최신 변경을 Homebrew `HEAD-ac69e7b`로 갱신했으며 설치 과정의 CMake 빌드와 CTest가 성공했습니다. 설치본 `/opt/homebrew/bin/meatcan`에서 `up --bitrate 25k` 후 `state=ready`, `send 127#10203040` 종료 코드 0, `tx=1`, `last_error=none`을 확인했습니다.
 
 ## 실장치 확인 순서
 
