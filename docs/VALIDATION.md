@@ -16,16 +16,18 @@
 
 ## Bitrate scan 자동 검증
 
-최신 CTest 3/3(5.84초), CLI 157/157, USB shim 67개 검사가 통과했습니다. 자동 검사는 실장치 대신 USB shim을 사용했습니다.
+최신 CTest 3/3(8.05초), CLI 157/157, USB shim 84개 검사가 통과했습니다. 자동 검사는 실장치 대신 USB shim을 사용했습니다.
 
 - 기본 후보 10개와 순서, 사용자 후보·중복 제거
-- LISTEN_ONLY 모드의 32비트 플래그 전달
+- 기본 normal receive/ACK, 명시적 LISTEN_ONLY, active probe 모드 전달
 - 최소 정상 프레임 수, 오류 프레임·송신 에코·잘못된 표준 ID 제외
-- 무수신, 잘못된 속도·시간·최소 개수, listen-only 미지원 오류
-- 후보별 CAN 종료, 동시 scan 소유권 잠금
+- 무수신, 잘못된 속도·시간·최소 개수, listen-only 미지원 오류, scan 모드 충돌
+- 후보별 USB open/CAN 종료/USB close, 동시 scan 소유권 잠금
 - SIGTERM 중단 시 종료 코드 130, 장치 정리와 잠금 재사용
 
-실제 25 kbps CAN 버스에서 `meatcan scan --rate 25k --timeout 10s --min-frames 1`을 실행해 정상 프레임 1개를 수신하고 25,000 bps를 검출했습니다. 탐색 종료 후 같은 장치를 `meatcan up --bitrate 25k`로 다시 열었으며 `state=ready`, `adapter=connected`를 확인했습니다. 희소 트래픽에서 탐색 경로를 확인하기 위해 임계값을 1로 낮춘 검사이며, 기본값은 오검출 가능성을 줄이기 위해 2프레임입니다.
+실제 25 kbps 2노드 버스에서 gateway를 100 ms마다 CAN down/up한 뒤 지속 송신해도 LISTEN_ONLY는 RX 0이었습니다. 앞서 관찰한 최초 1프레임은 stale 데이터일 가능성을 배제할 수 없습니다. 따라서 기본 scan은 normal receive/ACK 모드와 1프레임 임계값을 사용하며, 버스에 응답하지 않는 동작은 명시적 `--passive`로 제공합니다. 상대가 송신하지 않는 경우를 위한 `--active` probe는 명시적 후보와 최대 100 ms 창을 요구합니다. 정상 다중 노드 버스에서는 `--min-frames 2` 이상을 사용할 수 있습니다.
+
+최종 실장치 검사에서는 gateway가 매 송신 후 CAN 인터페이스를 내려 TX 큐를 비우고 25 kbps로 다시 올리도록 구성했습니다. 기본 `meatcan scan`이 `500k, 250k, 125k, 1m, 800k, 100k, 50k`를 제외한 뒤 25 kbps에서 정상 프레임 1개를 받고 검출에 성공했습니다. 후보별 USB close 후 100 ms 안정화를 적용한 상태에서 scan 종료 후에도 장치가 `1209:2323`으로 유지됐고, 이어진 `up --bitrate 25k`, `send 123#01020304`, `status`, `down`도 `tx=1`, `last_error=none`으로 성공했습니다.
 
 ## 실제 장치: 25 kbps 검증 성공
 

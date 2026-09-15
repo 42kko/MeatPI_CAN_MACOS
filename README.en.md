@@ -81,7 +81,7 @@ Continuous transmission can significantly increase CAN bus utilization. Start on
 
 ### Bitrate scanning
 
-`scan` applies candidate bitrates one at a time in listen-only mode and detects the rate that receives valid CAN frames. It does not transmit frames, ACKs, or Error Frames while scanning. Scanning cannot run while `meatcan up` owns the adapter, so run `meatcan down` first.
+By default, `scan` applies candidate bitrates in normal receive mode and detects the rate that receives a valid CAN frame. This mode acknowledges valid frames and can affect the bus with Error Frames at a wrong candidate. Use `--passive` to make no response, or use an `--active` probe with a narrow candidate list when the peer only acknowledges and does not transmit. Scanning cannot run while `meatcan up` owns the adapter, so run `meatcan down` first.
 
 ```sh
 # Stop the daemon first if it is running.
@@ -93,28 +93,36 @@ meatcan scan
 # Scan only selected candidates.
 meatcan scan --rates 125k,250k,500k
 
+# Observe an established multi-node bus without responding.
+meatcan scan --passive --rates 125k,250k,500k
+
 # Listen to one candidate for three seconds.
 meatcan scan --rate 500k --timeout 3s
 
 # Accept one valid frame as a match.
 meatcan scan --rate 25k --min-frames 1
 
+# Probe a peer that acknowledges but does not transmit frames.
+meatcan scan --active --rate 500k
+
 # Show scan-specific help.
 meatcan scan -h
 ```
 
-The default candidates, in order, are `10k, 20k, 25k, 50k, 100k, 125k, 250k, 500k, 800k, 1m`. The default listening window is one second per candidate. The first candidate receiving two valid frames is reported as a match, and scanning stops. Specifying `--rates` or `--rate` replaces the default list with your candidates.
+The default candidates, in order, are `500k, 250k, 125k, 1m, 800k, 100k, 50k, 25k, 20k, 10k`. Common rates are checked first to reduce time spent affecting the bus at a wrong candidate. The default listening window is one second per candidate. The first candidate receiving one valid frame is reported as a match, and scanning stops. Specifying `--rates` or `--rate` replaces the default list with your candidates. On a healthy multi-node bus, use `--min-frames 2` or higher for a stricter match.
 
 - `-r, --rates <list>` sets comma-separated candidate rates.
 - `--rate <rate>` adds one candidate and can be repeated.
 - `-t, --timeout <time>` sets the listening window per candidate. Use a positive integer with `s`, `ms`, or `us`, such as `3s`, `500ms`, or `500000us`. A bare number means milliseconds. The maximum is 24 hours.
 - `-m, --min-frames <count>` sets the number of valid frames required to confirm a match.
+- `--passive` observes in listen-only mode without sending ACKs or Error Frames. Two other nodes must already be communicating.
+- `--active` sends one lowest-priority extended zero-DLC probe per candidate and treats its TX echo within 100 ms as a match. `--rate` or `--rates` is required. This adapter does not support one-shot mode, so a probe at the wrong rate can be retried and produce Error Frames. Use it on a test bus with a narrow list such as `--rates 500k,250k`.
 
-Another node must actively transmit frames while scanning. Since MeatPi does not acknowledge frames in listen-only mode, scan a bus where a transmitter and another normal node can already communicate and acknowledge traffic. If MeatPi is the transmitter's only peer, missing ACKs can cause retransmissions or error states that affect detection.
+The default and `--passive` modes require another node to transmit frames. The default mode acknowledges valid frames and therefore works in a two-node setup. In `--passive`, MeatPi does not acknowledge frames, so a transmitter and another normal node must already be communicating.
 
 Increase `--timeout` for infrequent messages. Wiring, termination, or CAN H/L problems can prevent detection; no match does not prove that the bitrate is wrong. `--min-frames` counts valid receptions, not distinct messages. A match does not establish long-term bus reliability.
 
-Scanning opens the adapter directly and cannot run alongside a daemon or another scan. It fails if the adapter is absent or a candidate bitrate cannot be configured exactly. USB initialization time is outside `--timeout`; an in-progress USB read may extend the listening window by about 10 ms. Exit codes are `0` for a match, `1` for no match or an error, and `130` for `Ctrl+C`. Scanning stops CAN when it exits and does not automatically start a daemon at the detected rate. Use the printed `meatcan up --bitrate ...` command to start normal operation.
+Scanning opens the adapter for each candidate, then stops CAN, closes USB, and allows 100 ms for the firmware to settle when that receive window ends. Reconfiguring CAN repeatedly on one handle or reopening immediately after STOP caused USB I/O errors and device disconnects on some Ollie v2 adapters, so each candidate starts with a fresh open. `--active` uses the same cleanup to prevent retransmission state at a wrong rate from carrying into the next candidate. Scanning cannot run alongside a daemon or another scan. It fails if the adapter is absent or a candidate bitrate cannot be configured exactly. USB setup and candidate transitions are outside `--timeout`; an in-progress USB read may extend the listening window by about 10 ms. Exit codes are `0` for a match, `1` for no match or an error, and `130` for `Ctrl+C`. Scanning stops CAN when it exits and does not automatically start a daemon at the detected rate. Use the printed `meatcan up --bitrate ...` command to start normal operation.
 
 `State waiting` and `Adapter waiting` mean the daemon is waiting for the USB adapter or for initialization. `State ready` and `Adapter connected` mean USB and CAN initialization completed. `down` reports the state, adapter, bitrate, traffic counters, and last error from immediately before shutdown. A `ready` state does not guarantee correct bus wiring or an active peer. Stop any Python program that directly owns the same GS USB adapter before running `meatcan`.
 
@@ -126,7 +134,7 @@ meatcan dump ── receive subscription ──┐
 meatcan send ── transmit request ──────┘
 
 # Only while the daemon is stopped
-meatcan scan ── libusb (listen-only) ── MeatPi
+meatcan scan ── libusb (receive + ACK) ── MeatPi
 ```
 
 One daemon owns the USB adapter. Multiple terminals can use `dump` and `send`, and stopping a `dump` subscription leaves CAN running. `down` stops CAN. In normal CAN mode, the controller can acknowledge valid frames even when no dump subscriber is active.

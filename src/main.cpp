@@ -20,6 +20,10 @@
 using namespace meatcan;
 using Clock = std::chrono::steady_clock;
 static constexpr uint32_t listen_only_flag = 1u;
+static constexpr uint64_t active_probe_timeout = 100000;
+static constexpr useconds_t candidate_settle_us = 100000;
+static constexpr uint32_t probe_echo = 0u;
+static constexpr uint32_t probe_id = 0x80000000u | 0x1fffffffu;
 static volatile sig_atomic_t stopping = 0;
 static void stop_signal(int) { stopping = 1; }
 static std::string directory() {
@@ -115,6 +119,29 @@ class Usb {
       throw std::runtime_error(std::string(stage) +
                                ": short USB control transfer");
   }
+  void start(uint32_t rate, uint32_t mode_flags) {
+    uint8_t cb[40];
+    control("read CAN capabilities", 0xc1, 4, cb, 40);
+    std::array<uint32_t, 10> caps{};
+    for (int i = 0; i < 10; i++)
+      caps[i] = get32(cb + 4 * i);
+    if (mode_flags & ~caps[0])
+      throw std::runtime_error(
+          "requested CAN mode is not supported by the adapter");
+    auto t = timing(caps, rate);
+    uint8_t bt[20];
+    put32(bt, 1);
+    put32(bt + 4, t.tseg1 - 1);
+    put32(bt + 8, t.tseg2);
+    put32(bt + 12, 1);
+    put32(bt + 16, t.brp);
+    control("set CAN timing", 0x41, 1, bt, 20);
+    uint8_t mode[8]{};
+    put32(mode, 1);
+    put32(mode + 4, mode_flags);
+    control("start CAN", 0x41, 2, mode, 8);
+    started = true;
+  }
 
 public:
   Usb() { usb_check(libusb_init(&ctx), "libusb_init"); }
@@ -179,27 +206,7 @@ public:
       // Match the working Ollie Python initialization: capabilities, timing,
       // then START. That path omits HOST_FORMAT and the pre-start channel
       // reset / endpoint drain. In particular, never reset the USB bus.
-      uint8_t cb[40];
-      control("read CAN capabilities", 0xc1, 4, cb, 40);
-      std::array<uint32_t, 10> caps{};
-      for (int i = 0; i < 10; i++)
-        caps[i] = get32(cb + 4 * i);
-      if (mode_flags & ~caps[0])
-        throw std::runtime_error(
-            "requested CAN mode is not supported by the adapter");
-      auto t = timing(caps, rate);
-      uint8_t bt[20];
-      put32(bt, 1);
-      put32(bt + 4, t.tseg1 - 1);
-      put32(bt + 8, t.tseg2);
-      put32(bt + 12, 1);
-      put32(bt + 16, t.brp);
-      control("set CAN timing", 0x41, 1, bt, 20);
-      uint8_t mode[8]{};
-      put32(mode, 1);
-      put32(mode + 4, mode_flags);
-      control("start CAN", 0x41, 2, mode, 8);
-      started = true;
+      start(rate, mode_flags);
       return true;
     } catch (...) {
       disconnect();
@@ -770,14 +777,16 @@ static void scan_help() {
                "  -r, --rates <list>       Candidate rates, comma-separated\n"
                "      --rate <rate>        Add one candidate rate\n"
                "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
-               "  -m, --min-frames <count> Valid frames required (default: 2)\n"
+               "  -m, --min-frames <count> Valid frames required (default: 1)\n"
+               "      --passive            Listen without ACKs or Error Frames\n"
+               "      --active             Send one probe per rate; requires --rate(s)\n"
                "  -h, --help               Show this help\n\n"
                "Default rates\n"
-               "  10k,20k,25k,50k,100k,125k,250k,500k,800k,1m\n\n"
+               "  500k,250k,125k,1m,800k,100k,50k,25k,20k,10k\n\n"
                "Examples\n"
                "  meatcan scan\n"
-               "  meatcan scan --rates 125k,250k,500k\n"
-               "  meatcan scan --rate 500k -t 3s\n";
+               "  meatcan scan --passive --rates 125k,250k,500k\n"
+               "  meatcan scan --active --rate 500k\n";
 }
 // Share the daemon's ownership lock, including between candidate bitrates.
 // The socket check alone would race daemon startup or a second scan.
@@ -812,11 +821,16 @@ static bool valid_scan_frame(const Frame &frame) {
   // A standard frame cannot contain arbitration bits outside its 11-bit ID.
   return (frame.id & 0x80000000u) || ((frame.id & 0x1fffffffu) <= 0x7ffu);
 }
+static bool valid_probe_echo(const Frame &frame) {
+  return frame.echo == probe_echo && frame.id == probe_id && frame.dlc == 0;
+}
 static int scan_command(const std::string &d, int argc, char **argv) {
   std::vector<uint32_t> rates;
   uint64_t timeout = 1000000;
-  uint64_t minimum = 2;
+  uint64_t minimum = 1;
   bool custom_rates = false;
+  bool passive = false;
+  bool active = false;
   for (int i = 2; i < argc; i++) {
     std::string arg = argv[i];
     if ((arg == "-r" || arg == "--rates") && i + 1 < argc) {
@@ -839,16 +853,25 @@ static int scan_command(const std::string &d, int argc, char **argv) {
         throw std::runtime_error("scan timeout must be greater than zero");
     } else if ((arg == "-m" || arg == "--min-frames") && i + 1 < argc) {
       minimum = positive_integer(argv[++i], "minimum frame count");
+    } else if (arg == "--passive") {
+      passive = true;
+    } else if (arg == "--active") {
+      active = true;
     } else {
       throw std::runtime_error("unknown or incomplete scan option: " + arg);
     }
   }
   if (!custom_rates)
-    for (auto value : {"10k", "20k", "25k", "50k", "100k", "125k", "250k",
-                       "500k", "800k", "1m"})
+    for (auto value : {"500k", "250k", "125k", "1m", "800k", "100k", "50k",
+                       "25k", "20k", "10k"})
       append_rates(value, rates);
   if (rates.empty())
     throw std::runtime_error("at least one scan rate is required");
+  if (active && passive)
+    throw std::runtime_error("--active and --passive cannot be combined");
+  if (active && !custom_rates)
+    throw std::runtime_error(
+        "active scan requires --rate or --rates to limit bus disruption");
 
   int existing = connect_to(d);
   if (existing >= 0) {
@@ -859,47 +882,86 @@ static int scan_command(const std::string &d, int argc, char **argv) {
 
   ScanLock ownership(d);
   std::cout << "MeatCAN bitrate scan\n\n"
-            << "  Mode        listen-only\n"
+            << "  Mode        "
+            << (active ? "active probe"
+                       : passive ? "listen-only" : "receive + ACK")
+            << '\n'
             << "  Candidates  " << rates.size() << '\n'
-            << "  Window      " << interval_text(timeout) << " per bitrate\n"
-            << "  Required    " << minimum << " valid frames\n\n";
+            << "  Window      "
+            << interval_text(active ? std::min(timeout, active_probe_timeout)
+                                    : timeout)
+            << " per bitrate\n"
+            << "  Required    "
+            << (active ? "acknowledged probe" : std::to_string(minimum) +
+                                                      " valid frames")
+            << "\n\n";
   signal(SIGINT, stop_signal);
   signal(SIGTERM, stop_signal);
   Usb usb;
   for (auto rate : rates) {
     if (stopping)
       break;
-    if (!usb.open(rate, listen_only_flag))
+    if (!usb.open(rate, passive ? listen_only_flag : 0u))
       throw std::runtime_error("MeatPi USB adapter not found (1209:2323)");
+    if (active) {
+      Frame probe;
+      probe.echo = probe_echo;
+      probe.id = probe_id;
+      usb.send_frame(probe);
+    }
     uint64_t frames = 0;
-    auto deadline = Clock::now() + std::chrono::microseconds(timeout);
-    while (!stopping && Clock::now() < deadline && frames < minimum) {
-      for (const auto &frame : usb.read())
-        if (valid_scan_frame(frame))
+    bool acknowledged = false;
+    auto window = active ? std::min(timeout, active_probe_timeout) : timeout;
+    auto deadline = Clock::now() + std::chrono::microseconds(window);
+    while (!stopping && Clock::now() < deadline &&
+           (active || frames < minimum) && !acknowledged) {
+      for (const auto &frame : usb.read()) {
+        if (active && valid_probe_echo(frame))
+          acknowledged = true;
+        else if (valid_scan_frame(frame))
           frames++;
+      }
     }
     usb.disconnect();
     std::cout << "  " << grouped(std::to_string(rate)) << " bps  ";
-    if (frames)
+    if (acknowledged)
+      std::cout << "probe acknowledged";
+    else if (!active && frames)
       std::cout << frames << " valid frame" << (frames == 1 ? "" : "s");
     else
-      std::cout << "no traffic";
+      std::cout << (active ? "no probe echo" : "no traffic");
     std::cout << '\n';
-    if (frames >= minimum) {
+    if (acknowledged || (!active && frames >= minimum)) {
       std::cout << "\nBitrate detected\n\n"
-                << "  Bitrate     " << grouped(std::to_string(rate)) << " bps\n"
-                << "  Frames      " << frames << '\n'
+                << "  Bitrate     " << grouped(std::to_string(rate)) << " bps\n";
+      if (acknowledged)
+        std::cout << "  Probe       acknowledged\n";
+      else
+        std::cout << "  Frames      " << frames << '\n';
+      std::cout
                 << "  Start       meatcan up --bitrate " << rate << '\n';
       return 0;
     }
+    // Ollie v2 firmware may stop responding when the next libusb session
+    // begins immediately after CAN STOP and interface release.
+    usleep(candidate_settle_us);
   }
   if (stopping) {
     std::cout << "\nMeatCAN scan stopped\n";
     return 130;
   }
-  std::cout << "\nNo bitrate detected\n\n"
-            << "  Check that another CAN node is actively transmitting.\n"
-            << "  Increase --timeout for infrequent traffic.\n";
+  std::cout << "\nNo bitrate detected\n\n";
+  if (active) {
+    std::cout << "  Check wiring, termination, and that a peer is online.\n"
+              << "  Reset peers that entered an error state before retrying.\n";
+  } else if (passive) {
+    std::cout << "  Check that two other CAN nodes are already communicating.\n"
+              << "  Passive mode does not ACK a lone transmitter.\n";
+  } else {
+    std::cout << "  Check that another CAN node is actively transmitting.\n"
+              << "  Increase --timeout for infrequent traffic.\n";
+    std::cout << "  If the peer only acknowledges, retry with --active.\n";
+  }
   return 1;
 }
 static void help() {
@@ -912,7 +974,7 @@ static void help() {
          "  up       Start CAN and connect to the adapter\n"
          "  dump     Monitor received CAN frames\n"
          "  send     Send, repeat, or continuously transmit a frame\n"
-         "  scan     Detect an active CAN bitrate in listen-only mode\n"
+         "  scan     Detect an active CAN bitrate\n"
          "  status   Show adapter and traffic status\n"
          "  down     Stop CAN and the background daemon\n\n"
          "Options\n"
@@ -929,7 +991,9 @@ static void help() {
          "  -r, --rates <list>       Candidate rates, comma-separated\n"
          "      --rate <rate>        Add one candidate rate\n"
          "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
-         "  -m, --min-frames <count> Valid frames required (default: 2)\n\n"
+         "  -m, --min-frames <count> Valid frames required (default: 1)\n"
+         "      --passive            Listen without ACKs or Error Frames\n"
+         "      --active             Send one probe per rate; requires --rate(s)\n\n"
          "Examples\n"
          "  meatcan up --bitrate 25k\n"
          "  meatcan send 123#01020304\n"

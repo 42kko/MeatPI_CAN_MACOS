@@ -126,12 +126,12 @@ try:
         timeout=5,
     )
     assert scan.returncode == 0, (scan.stdout, scan.stderr)
-    assert 'Mode        listen-only' in scan.stdout
+    assert 'Mode        receive + ACK' in scan.stdout
     assert 'Candidates  1' in scan.stdout
     assert 'Bitrate detected' in scan.stdout
     assert 'Bitrate     25,000 bps' in scan.stdout
     lines = log.read_text().splitlines()
-    assert 'START_LISTEN_ONLY' in lines, lines
+    assert 'START' in lines and 'START_LISTEN_ONLY' not in lines, lines
     assert lines.count('RX_FRAME') == 2, lines
     assert 'STOP' in lines, lines
     checks += 7
@@ -185,9 +185,30 @@ def scan_case(arguments, variables=None):
 result, trace = scan_case(['-t', '1ms'])
 assert result.returncode == 1 and 'Candidates  10' in result.stdout, result
 assert [line for line in trace if line.startswith('RATE ')] == [
-    f'RATE {rate}' for rate in [10000, 20000, 25000, 50000, 100000, 125000, 250000, 500000, 800000, 1000000]
+    f'RATE {rate}' for rate in [500000, 250000, 125000, 1000000, 800000, 100000, 50000, 25000, 20000, 10000]
 ], trace
-assert trace.count('START_LISTEN_ONLY') == trace.count('STOP') == trace.count('CLOSE') == 10, trace
+assert trace.count('START') == trace.count('STOP') == 10, trace
+assert trace.count('OPEN') == trace.count('CLOSE') == 10, trace
+checks += 3
+
+result, trace = scan_case(['--active'])
+assert result.returncode != 0, result
+assert 'requires --rate or --rates' in result.stderr, result.stderr
+assert not trace, trace
+checks += 3
+
+result, trace = scan_case(['--active', '--passive', '--rate', '25k'])
+assert result.returncode != 0 and 'cannot be combined' in result.stderr, result
+assert not trace, trace
+checks += 2
+
+result, trace = scan_case(
+    ['--passive', '--rate', '25k', '-t', '10ms'],
+    {'MEATCAN_SHIM_RX': 'yes'},
+)
+assert result.returncode == 0 and 'Mode        listen-only' in result.stdout, result
+assert trace.count('START_LISTEN_ONLY') == trace.count('STOP') == 1, trace
+assert trace.count('OPEN') == trace.count('CLOSE') == 1, trace
 checks += 3
 
 result, trace = scan_case(
@@ -197,8 +218,33 @@ result, trace = scan_case(
 assert result.returncode == 0 and 'Candidates  3' in result.stdout, result
 assert 'Bitrate     250,000 bps' in result.stdout, result.stdout
 assert [line for line in trace if line.startswith('RATE ')] == ['RATE 125000', 'RATE 250000'], trace
-assert trace.count('START_LISTEN_ONLY') == trace.count('STOP') == trace.count('CLOSE') == 2, trace
+assert trace.count('START') == trace.count('STOP') == 2, trace
+assert trace.count('OPEN') == trace.count('CLOSE') == 2, trace
 checks += 4
+
+result, trace = scan_case(
+    ['--active', '--rates', '250k,500k', '-t', '100ms'],
+    {'MEATCAN_SHIM_ACK_RATE': '500000'},
+)
+assert result.returncode == 0 and 'Mode        active probe' in result.stdout, result
+assert 'Bitrate     500,000 bps' in result.stdout, result.stdout
+assert '250,000 bps  no probe echo' in result.stdout, result.stdout
+assert 'Probe       acknowledged' in result.stdout, result.stdout
+assert trace.count('START') == trace.count('STOP') == 2, trace
+assert trace.count('OPEN') == trace.count('CLOSE') == 2, trace
+assert trace.count('TX_PROBE') == 2 and trace.count('RX_PROBE_ECHO') == 1, trace
+assert 'START_LISTEN_ONLY' not in trace, trace
+checks += 7
+
+# Active mode requires the probe's TX echo; unrelated RX traffic is not a match.
+result, trace = scan_case(
+    ['--active', '--rate', '500k', '-t', '10ms'],
+    {'MEATCAN_SHIM_RX': 'yes', 'MEATCAN_SHIM_RX_RATE': '500000',
+     'MEATCAN_SHIM_ALLOW_ACTIVE_RX': 'yes'},
+)
+assert result.returncode == 1 and '500,000 bps  no probe echo' in result.stdout, result
+assert trace.count('TX_PROBE') == 1 and 'RX_PROBE_ECHO' not in trace, trace
+checks += 2
 
 for pattern in ['echo', 'error', 'once', 'mixed', 'invalid_standard']:
     result, trace = scan_case(
@@ -225,7 +271,8 @@ for options in [
     checks += 1
 
 result, trace = scan_case(
-    ['--rate', '25k', '-t', '1000us'], {'MEATCAN_SHIM_NO_LISTEN': 'yes'},
+    ['--passive', '--rate', '25k', '-t', '1000us'],
+    {'MEATCAN_SHIM_NO_LISTEN': 'yes'},
 )
 assert result.returncode != 0 and 'START_LISTEN_ONLY' not in trace, (result, trace)
 assert trace.count('CLOSE') == 1 and 'STOP' not in trace, trace
@@ -246,7 +293,7 @@ first = subprocess.Popen(
 )
 try:
     for _ in range(100):
-        if log.exists() and 'START_LISTEN_ONLY' in log.read_text():
+        if log.exists() and 'START' in log.read_text():
             break
         time.sleep(0.01)
     else:

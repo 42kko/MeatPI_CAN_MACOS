@@ -6,9 +6,10 @@
 #include <unistd.h>
 
 static bool started = false;
-static bool listen_only = false;
 static uint32_t selected_rate = 0;
 static unsigned int emitted = 0;
+static bool probe_echo_pending = false;
+static unsigned char pending_probe[20]{};
 static uint32_t read32(const unsigned char *p) {
   return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 |
          uint32_t(p[3]) << 24;
@@ -109,7 +110,6 @@ int libusb_control_transfer(libusb_device_handle *, uint8_t type,
   if (mode) {
     emitted = 0;
     started = data[0] != 0;
-    listen_only = started && data[4] == 1;
   }
   return length;
 }
@@ -122,6 +122,16 @@ int libusb_bulk_transfer(libusb_device_handle *, unsigned char endpoint,
     log("PRE_START_BULK");
     return LIBUSB_ERROR_INVALID_PARAM;
   }
+  if (endpoint == 0x02 && length == 20) {
+    log("TX_PROBE");
+    const char *ack_rate = std::getenv("MEATCAN_SHIM_ACK_RATE");
+    if (ack_rate && selected_rate == std::strtoul(ack_rate, nullptr, 10)) {
+      std::memcpy(pending_probe, data, sizeof(pending_probe));
+      probe_echo_pending = true;
+    }
+    *transferred = length;
+    return 0;
+  }
   if (endpoint != 0x81 || length != 512) {
     log("INVALID_BULK");
     return LIBUSB_ERROR_INVALID_PARAM;
@@ -130,7 +140,14 @@ int libusb_bulk_transfer(libusb_device_handle *, unsigned char endpoint,
   const char *only_rate = std::getenv("MEATCAN_SHIM_RX_RATE");
   const bool matching_rate =
       !only_rate || selected_rate == std::strtoul(only_rate, nullptr, 10);
-  if (listen_only && pattern && matching_rate &&
+  if (probe_echo_pending) {
+    std::memcpy(data, pending_probe, sizeof(pending_probe));
+    probe_echo_pending = false;
+    *transferred = sizeof(pending_probe);
+    log("RX_PROBE_ECHO");
+    return 0;
+  }
+  if (started && pattern && matching_rate &&
       (std::strcmp(pattern, "once") != 0 || emitted == 0)) {
     std::memset(data, 0, size_t(length));
     std::memset(data, 0xff, 4);
