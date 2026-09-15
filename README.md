@@ -49,7 +49,7 @@ meatcan down
 
 `send`는 16진수 CAN ID와 짝수 길이의 16진수 데이터(최대 16자리)를 받습니다. 빈 데이터는 `123#`입니다. 확장 ID 예시는 `1ABCDEFF#01020304`입니다. 송신은 장치의 고유 에코를 기다리며 성공은 종료 코드 `0`, 오류·타임아웃은 `1`입니다. 에코 타임아웃은 상대 애플리케이션의 처리 여부를 뜻하지 않으며, 완료가 불명확한 메시지를 자동 재전송하지 않습니다.
 
-`up` 성공은 관리 프로세스가 시작됐다는 뜻입니다. 장치 연결·초기화 완료 여부는 `status`로 확인하세요. `state=waiting`은 연결 또는 초기화 대기, `state=ready`는 준비 완료이며, `rx`, `tx`, `slow_subscribers`, `last_error`도 표시합니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
+`up` 성공은 관리 프로세스가 시작됐다는 뜻입니다. 장치 연결·초기화 완료 여부는 `status`로 확인하세요. `state=waiting`은 연결 또는 초기화 대기, `state=ready`는 USB/CAN 초기화 완료를 뜻하며 선로의 정상 상태나 상대 연결을 보장하지 않습니다. 상태에는 `rx`, `tx`, `slow_subscribers`, `last_error`도 표시합니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
 
 ## 동작 구조
 
@@ -65,9 +65,10 @@ meatcan send ── 송신 요청 ──┘
 
 ## Homebrew 설치·업데이트
 
-아래 명령은 이 저장소와 Formula가 GitHub에 공개된 뒤 사용할 수 있습니다. 현재 Formula는 소스의 `main`을 빌드하는 HEAD 설치를 제공합니다.
+아래 명령은 이 저장소와 Formula가 GitHub에 공개된 뒤 사용할 수 있습니다. 현재 Formula는 소스의 `main`을 빌드하는 HEAD 설치를 제공합니다. Homebrew 7에서는 tap 전에 아래와 같이 이 Formula의 신뢰를 등록합니다. `trust` 명령이 없는 구버전 Homebrew에서는 첫 줄을 생략하세요.
 
 ```sh
+brew trust --formula 42kko/meatcan/meatcan
 brew tap 42kko/meatcan https://github.com/42kko/MeatPI_CAN_MACOS.git
 brew install --HEAD 42kko/meatcan/meatcan
 ```

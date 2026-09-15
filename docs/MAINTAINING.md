@@ -10,7 +10,7 @@
 
 1. 변경 사항을 검토하고 아래 테스트를 실행합니다.
 2. GitHub의 `main`에 커밋을 push합니다.
-3. 사용자는 HEAD 설치 또는 업데이트를 실행합니다.
+3. 사용자는 HEAD 설치 또는 업데이트를 실행합니다. Homebrew 7에서는 tap 전에 해당 Formula만 `brew trust --formula`로 신뢰하도록 등록합니다. `trust` 명령이 없는 구버전에서는 해당 줄을 생략하세요.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -19,6 +19,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 ```sh
+brew trust --formula 42kko/meatcan/meatcan
 brew tap 42kko/meatcan https://github.com/42kko/MeatPI_CAN_MACOS.git
 brew install --HEAD 42kko/meatcan/meatcan
 brew test 42kko/meatcan/meatcan

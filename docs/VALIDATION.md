@@ -10,6 +10,8 @@
 - Mock 12,000프레임에서 송수신 카운터 일치, 느린 구독자 분리 후 daemon 응답 유지
 - 발견된 속도 정수 오버플로 및 종료된 클라이언트 fd 재사용 문제는 수정 후 재검증
 - Homebrew Formula Ruby 구문 및 릴리스 SHA-256 갱신 스크립트 검사 통과
+- 실제 custom tap 연결 및 Homebrew HEAD 설치 성공 (`HEAD-6b642b4`)
+- `brew test 42kko/meatcan/meatcan` 통과, `/opt/homebrew/bin/meatcan --version` 확인
 
 ## 실제 장치: 검증 미완료
 
