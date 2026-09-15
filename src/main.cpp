@@ -88,7 +88,7 @@ static void print_state(const std::string &heading, const std::string &record,
             << "  Bitrate     " << grouped(field(record, "bitrate")) << " bps\n"
             << "  Frames      RX " << field(record, "rx") << "  |  TX "
             << field(record, "tx") << '\n'
-            << "  Slow clients " << field_or(record, "slow_subscribers", "0")
+            << "  Slow drops  " << field_or(record, "slow_subscribers", "0")
             << '\n'
             << "  Last error  " << field(record, "last_error") << '\n';
 }
