@@ -47,8 +47,6 @@ MeatPi Ollie v2 GS USB `1209:2323`의 CAN 클럭 36 MHz, BRP 1~1024, USB IN 최�
 
 | 검사 | 결과 |
 |---|---|
-| 기존 Python 시작·대기·종료 | 성공 |
-| Python 양방향 | gateway의 `321#11223344` 수신, `123#01020304` 송신 후 gateway 수신 확인 |
 | 수정된 C++ 초기화 | `state=ready` |
 | C++ 양방향 | gateway의 `322#55667788` 수신, `124#AABBCCDD` 송신 후 gateway 수신 확인 |
 | C++ 재시작·송신 반복 | 5회 성공 |
@@ -60,11 +58,11 @@ MeatPi Ollie v2 GS USB `1209:2323`의 CAN 클럭 36 MHz, BRP 1~1024, USB IN 최�
 
 ## 초기화 문제와 변경 사항
 
-사용자는 C++ 시작 시 연결이 끊기는 현상을 보고했습니다. 초기 진단에서는 C++ 제어 요청 timeout 이후 Python의 GET_CONFIGURATION 및 GS USB 기능 조회도 timeout 또는 STALL로 실패했습니다. 캐시된 configuration은 1이었으나 재적용만으로는 복구되지 않았습니다.
+사용자는 C++ 시작 시 연결이 끊기는 현상을 보고했습니다. 초기 진단에서는 C++ 제어 요청 timeout 이후 GET_CONFIGURATION 및 GS USB 기능 조회도 timeout 또는 STALL로 실패했습니다. 캐시된 configuration은 1이었으나 재적용만으로는 복구되지 않았습니다.
 
-기존 Python 경로에 맞춰 시작 시 별도 CAN STOP, 수신 drain, HOST_FORMAT 요청을 제거하고, CAN 시작에 성공한 경우에만 종료 정리를 수행하도록 수정했습니다. 위 실장치 성공은 이 수정과 실제 USB 분리·재연결 이후 관찰한 결과입니다. **제거한 요청 중 어느 것이 원인이었는지는 분리 검증하지 않았습니다.**
+검증된 초기화 순서에 맞춰 시작 시 별도 CAN STOP, 수신 drain, HOST_FORMAT 요청을 제거하고, CAN 시작에 성공한 경우에만 종료 정리를 수행하도록 수정했습니다. 위 실장치 성공은 이 수정과 실제 USB 분리·재연결 이후 관찰한 결과입니다. **제거한 요청 중 어느 것이 원인이었는지는 분리 검증하지 않았습니다.**
 
-정상 상태에서 시험한 소프트 USB reset은 `Entity not found`를 반환했으나 이후 configuration은 0이었고, Python에서 configuration 설정·시작·종료가 가능했습니다. 이전 정지 상태에서의 reset timeout 시험은 사용자 USB 분리와 시간이 겹쳐 복구 인과관계를 판단할 수 없습니다. 소프트 reset을 확실한 복구 방법으로 간주하지 않습니다.
+정상 상태에서 시험한 소프트 USB reset은 `Entity not found`를 반환했으나 이후 configuration은 0이었고, 다시 configuration 설정·시작·종료가 가능했습니다. 이전 정지 상태에서의 reset timeout 시험은 사용자 USB 분리와 시간이 겹쳐 복구 인과관계를 판단할 수 없습니다. 소프트 reset을 확실한 복구 방법으로 간주하지 않습니다.
 
 이전 초기화 변경을 Homebrew `HEAD-ac69e7b`로 갱신했을 때 설치 과정의 CMake 빌드와 CTest가 성공했습니다. 설치본 `/opt/homebrew/bin/meatcan`에서 `up --bitrate 25k` 후 `state=ready`, `send 127#10203040` 종료 코드 0, `tx=1`, `last_error=none`을 확인했습니다.
 

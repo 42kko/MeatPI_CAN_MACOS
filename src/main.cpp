@@ -218,8 +218,8 @@ public:
       usb_check(packet, "IN endpoint packet size");
       if (packet < 20 || packet > 4096)
         throw std::runtime_error("unexpected endpoint packet size");
-      // Match the working Ollie Python initialization: capabilities, timing,
-      // then START. That path omits HOST_FORMAT and the pre-start channel
+      // Use the verified Ollie initialization sequence: capabilities, timing,
+      // then START. This sequence omits HOST_FORMAT and the pre-start channel
       // reset / endpoint drain. In particular, never reset the USB bus.
       start(rate, mode_flags);
       return true;

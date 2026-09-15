@@ -4,6 +4,8 @@
 
 `meatcan` is a C++ CLI for using the **MeatPi Ollie v2 GS USB CAN firmware** on macOS. It talks to the adapter through libusb and does not create a SocketCAN network interface on macOS.
 
+The installed `meatcan` command does not require Python or a virtual environment. Python files in this repository are used only for automated tests and Homebrew release maintenance.
+
 Target device: [MeatPi Ollie v2](https://github.com/meatpiHQ/meatpi_ollie_v2), USB ID `1209:2323`. The SLCAN serial firmware is not supported. The current scope is Classic CAN data frames with 11-bit or 29-bit IDs and up to 8 data bytes. CAN FD and RTR frames are not supported.
 
 ## Build from source
@@ -124,7 +126,7 @@ Increase `--timeout` for infrequent messages. Wiring, termination, or CAN H/L pr
 
 Scanning opens the adapter for each candidate, then verifies that CAN stopped and closes USB when the receive window ends. A failed STOP reports an error instead of reporting a match or advancing to another candidate. The 100 ms settling delay applies only after an unmatched candidate; a successful match exits without that delay. Reconfiguring CAN repeatedly on one handle or reopening immediately after STOP caused USB I/O errors and device disconnects on some Ollie v2 adapters, so each candidate starts with a fresh open. `--active` uses the same cleanup to prevent retransmission state at a wrong rate from carrying into the next candidate. Scanning cannot run alongside a daemon or another scan. It fails if the adapter is absent or a candidate bitrate cannot be configured exactly. USB setup and candidate transitions are outside `--timeout`; an in-progress USB read may extend the listening window by about 10 ms. Exit codes are `0` for a match, `1` for no match or an error, and `130` for `Ctrl+C`. Scanning stops CAN when it exits and does not automatically start a daemon at the detected rate. Use the printed `meatcan up --bitrate ...` command to start normal operation.
 
-`State waiting` and `Adapter waiting` mean the daemon is waiting for the USB adapter or for initialization. `State ready` and `Adapter connected` mean USB and CAN initialization completed. `down` reports the state, adapter, bitrate, traffic counters, and last error from immediately before shutdown. A `ready` state does not guarantee correct bus wiring or an active peer. Stop any Python program that directly owns the same GS USB adapter before running `meatcan`.
+`State waiting` and `Adapter waiting` mean the daemon is waiting for the USB adapter or for initialization. `State ready` and `Adapter connected` mean USB and CAN initialization completed. `down` reports the state, adapter, bitrate, traffic counters, and last error from immediately before shutdown. A `ready` state does not guarantee correct bus wiring or an active peer. Stop any other program that directly owns the same GS USB adapter before running `meatcan`.
 
 ## Architecture
 

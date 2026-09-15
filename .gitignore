@@ -1,8 +1,7 @@
-# Local Python prototype and environment
+# Python development caches and local environments
 .venv/
 __pycache__/
 *.py[cod]
-/meatpi_can.py
 
 # Build and packaging output
 /build*/
@@ -12,6 +11,3 @@ __pycache__/
 .DS_Store
 *.log
 .env
-
-# Legacy Python runtime data
-/.meatpi-runtime/

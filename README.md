@@ -4,6 +4,8 @@
 
 macOS에서 **MeatPi Ollie v2의 GS USB CAN 펌웨어**를 사용하는 C++ CLI입니다. libusb로 장치에 접근하며, macOS에 SocketCAN 네트워크 인터페이스를 만들지 않습니다.
 
+설치된 `meatcan` 실행에는 Python이나 가상환경이 필요하지 않습니다. 저장소의 Python 파일은 자동 테스트와 Homebrew 릴리스 관리에만 사용됩니다.
+
 대상 장치: [MeatPi Ollie v2](https://github.com/meatpiHQ/meatpi_ollie_v2), USB ID `1209:2323`. SLCAN 시리얼 펌웨어는 지원하지 않습니다. 현재 범위는 Classic CAN 데이터 프레임(11/29비트 ID, 최대 8바이트)이며 CAN FD와 RTR은 지원하지 않습니다.
 
 ## 빠른 시작: 소스 빌드
@@ -124,7 +126,7 @@ meatcan scan -h
 
 탐색은 후보마다 장치를 열고, 수신 창이 끝나면 CAN 정지 성공을 확인한 뒤 USB를 닫습니다. 정지가 실패하면 검출 성공이나 다음 후보 진행 대신 오류를 보고합니다. 불일치 후보 뒤에만 100 ms 동안 안정화하며, 검출 성공 시에는 이 대기 없이 종료합니다. 한 handle에서 CAN을 반복 재설정하거나 정지 직후 다시 열면 일부 Ollie v2에서 USB I/O 오류와 장치 연결 해제가 발생할 수 있어 후보 전환마다 다시 엽니다. `--active`도 잘못된 속도의 재전송 상태를 다음 후보로 넘기지 않도록 같은 정리 절차를 사용합니다. daemon이나 다른 scan과 동시에 실행할 수 없습니다. USB 장치가 없거나 후보 속도를 정확히 설정할 수 없으면 오류로 종료합니다. USB 초기화와 후보 전환 시간은 `--timeout`에 포함되지 않으며, 진행 중인 USB 읽기로 수신 시간이 약 10 ms 늘어날 수 있습니다. 성공은 종료 코드 `0`, 미검출·오류는 `1`, `Ctrl+C` 중단은 `130`입니다. 종료 시 CAN을 정지하며, 검출된 속도로 자동 시작하지 않습니다. 출력된 `meatcan up --bitrate ...` 명령으로 일반 송수신을 시작하세요.
 
-`State waiting`, `Adapter waiting`은 USB 장치 연결 또는 초기화 대기, `State ready`, `Adapter connected`는 USB/CAN 초기화 완료를 뜻합니다. `down`은 끄기 직전의 state, adapter, bitrate, 송수신 프레임 수와 마지막 오류를 출력합니다. `ready`는 선로의 정상 상태나 상대 연결까지 보장하지는 않습니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
+`State waiting`, `Adapter waiting`은 USB 장치 연결 또는 초기화 대기, `State ready`, `Adapter connected`는 USB/CAN 초기화 완료를 뜻합니다. `down`은 끄기 직전의 state, adapter, bitrate, 송수신 프레임 수와 마지막 오류를 출력합니다. `ready`는 선로의 정상 상태나 상대 연결까지 보장하지는 않습니다. 동일 USB 장치를 직접 사용하는 다른 프로그램은 종료한 뒤 실행합니다.
 
 ## 동작 구조
 
