@@ -511,7 +511,8 @@ static int daemon_main(const std::string &d, uint32_t rate, bool mock) {
   return 0;
 }
 static int request(const std::string &d, const std::string &cmd,
-                   bool stream = false, const std::string &heading = "") {
+                   bool stream = false, const std::string &heading = "",
+                   bool quiet = false) {
   int fd = connect_to(d);
   if (fd < 0)
     throw std::runtime_error(
@@ -529,6 +530,8 @@ static int request(const std::string &d, const std::string &cmd,
     char c;
     ssize_t n = recv(fd, &c, 1, 0);
     if (n <= 0) {
+      if (n < 0 && errno == EINTR)
+        continue;
       if (stream && handshake && n < 0 &&
           (errno == EAGAIN || errno == EWOULDBLOCK))
         continue;
@@ -572,7 +575,7 @@ static int request(const std::string &d, const std::string &cmd,
             usleep(10000);
           }
           throw std::runtime_error("daemon did not finish stopping");
-        } else if (cmd.rfind("SEND ", 0) == 0) {
+        } else if (cmd.rfind("SEND ", 0) == 0 && !quiet) {
           std::cout << "MeatCAN TX complete\n\n"
                     << "  Frame       " << cmd.substr(5) << '\n';
         }
@@ -593,6 +596,149 @@ static int request(const std::string &d, const std::string &cmd,
     line.clear();
   }
 }
+static uint64_t send_count(const std::string &value) {
+  if (value.empty() ||
+      value.find_first_not_of("0123456789") != std::string::npos)
+    throw std::runtime_error("repeat count must be a positive integer");
+  uint64_t count = 0;
+  try {
+    count = std::stoull(value);
+  } catch (const std::exception &) {
+    throw std::runtime_error("repeat count is too large");
+  }
+  if (!count)
+    throw std::runtime_error("repeat count must be at least 1");
+  return count;
+}
+static uint64_t send_interval(std::string value) {
+  uint64_t multiplier = 1000; // A bare value is milliseconds.
+  if (value.size() >= 2 && value.substr(value.size() - 2) == "us") {
+    multiplier = 1;
+    value.resize(value.size() - 2);
+  } else if (value.size() >= 2 && value.substr(value.size() - 2) == "ms") {
+    value.resize(value.size() - 2);
+  } else if (!value.empty() && value.back() == 's') {
+    multiplier = 1000000;
+    value.pop_back();
+  }
+  if (value.empty() ||
+      value.find_first_not_of("0123456789") != std::string::npos)
+    throw std::runtime_error("interval must look like 100ms, 1s, or 500us");
+  uint64_t amount = 0;
+  try {
+    amount = std::stoull(value);
+  } catch (const std::exception &) {
+    throw std::runtime_error("interval is too large");
+  }
+  constexpr uint64_t maximum = 24ull * 60 * 60 * 1000000;
+  if (amount > maximum / multiplier)
+    throw std::runtime_error("interval must not exceed 24 hours");
+  return amount * multiplier;
+}
+static std::string interval_text(uint64_t microseconds) {
+  if (!microseconds)
+    return "none";
+  if (microseconds % 1000000 == 0)
+    return grouped(std::to_string(microseconds / 1000000)) + " s";
+  if (microseconds % 1000 == 0)
+    return grouped(std::to_string(microseconds / 1000)) + " ms";
+  return grouped(std::to_string(microseconds)) + " us";
+}
+static void wait_interval(uint64_t microseconds) {
+  auto deadline = Clock::now() + std::chrono::microseconds(microseconds);
+  while (!stopping && Clock::now() < deadline) {
+    auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+                         deadline - Clock::now())
+                         .count();
+    usleep(useconds_t(std::min<int64_t>(remaining, 100000)));
+  }
+}
+static void send_help() {
+  std::cout
+      << "MeatCAN send\n\n"
+         "Usage\n"
+         "  meatcan send [options] ID#HEX\n\n"
+         "Options\n"
+         "  -r, --repeat <count>    Send the frame count times\n"
+         "  -c, --continuous        Send until Ctrl+C\n"
+         "  -i, --interval <time>   Delay between frames (500us, 100ms, 1s)\n"
+         "  -q, --quiet             Suppress successful output\n"
+         "  -h, --help              Show this help\n\n"
+         "Examples\n"
+         "  meatcan send 123#01020304\n"
+         "  meatcan send -r 10 -i 100ms 123#01020304\n"
+         "  meatcan send -c -i 1s 123#01020304\n";
+}
+static int send_command(const std::string &d, int argc, char **argv) {
+  std::string frame;
+  uint64_t count = 1;
+  uint64_t interval = 0;
+  bool count_set = false, interval_set = false;
+  bool continuous = false, quiet = false;
+  for (int i = 2; i < argc; i++) {
+    std::string arg = argv[i];
+    if ((arg == "-r" || arg == "--repeat") && i + 1 < argc) {
+      count = send_count(argv[++i]);
+      count_set = true;
+    } else if ((arg == "-i" || arg == "--interval") && i + 1 < argc) {
+      interval = send_interval(argv[++i]);
+      interval_set = true;
+    } else if (arg == "-c" || arg == "--continuous") {
+      continuous = true;
+    } else if (arg == "-q" || arg == "--quiet") {
+      quiet = true;
+    } else if (!arg.empty() && arg[0] == '-') {
+      throw std::runtime_error("unknown or incomplete send option: " + arg);
+    } else if (frame.empty()) {
+      frame = format(parse(arg));
+    } else {
+      throw std::runtime_error("send accepts exactly one CAN frame");
+    }
+  }
+  if (frame.empty())
+    throw std::runtime_error("usage: meatcan send [options] ID#HEX");
+  if (continuous && count_set)
+    throw std::runtime_error("--continuous cannot be combined with --repeat");
+  if (continuous && !interval_set)
+    interval = 100000;
+  if (!continuous && count == 1)
+    return request(d, "SEND " + frame, false, "", quiet);
+
+  if (!quiet) {
+    std::cout << "MeatCAN TX running\n\n"
+              << "  Frame       " << frame << '\n'
+              << "  Mode        "
+              << (continuous ? "continuous"
+                             : "repeat x" + grouped(std::to_string(count)))
+              << '\n'
+              << "  Interval    " << interval_text(interval) << '\n';
+    if (continuous)
+      std::cout << "  Stop        Ctrl+C\n";
+    std::cout << std::endl;
+  }
+
+  signal(SIGINT, stop_signal);
+  uint64_t sent = 0;
+  auto started = Clock::now();
+  while (!stopping && (continuous || sent < count)) {
+    request(d, "SEND " + frame, false, "", true);
+    sent++;
+    if (!stopping && (continuous || sent < count) && interval)
+      wait_interval(interval);
+  }
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     Clock::now() - started)
+                     .count();
+  if (!quiet) {
+    std::cout << (continuous ? "MeatCAN TX stopped" : "MeatCAN TX complete")
+              << "\n\n"
+              << "  Sent        " << grouped(std::to_string(sent)) << " frame"
+              << (sent == 1 ? "" : "s") << '\n'
+              << "  Elapsed     " << grouped(std::to_string(elapsed))
+              << " ms\n";
+  }
+  return 0;
+}
 static void help() {
   std::cout << "MeatCAN 0.1.0\n"
                "macOS CLI for MeatPi Ollie v2 GS USB Classic CAN\n\n"
@@ -601,7 +747,7 @@ static void help() {
                "Commands\n"
                "  up       Start CAN and connect to the adapter\n"
                "  dump     Monitor received CAN frames\n"
-               "  send     Send one frame, for example 123#01020304\n"
+               "  send     Send, repeat, or continuously transmit a frame\n"
                "  status   Show adapter and traffic status\n"
                "  down     Stop CAN and the background daemon\n\n"
                "Options\n"
@@ -612,17 +758,27 @@ static void help() {
                "Examples\n"
                "  meatcan up --bitrate 25k\n"
                "  meatcan send 123#01020304\n"
+               "  meatcan send -r 10 -i 100ms 123#01020304\n"
                "  meatcan dump\n"
                "  meatcan down\n";
 }
 int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   try {
-    bool wants_help = argc < 2;
+    bool wants_help = argc < 2 || (argc >= 2 && std::string(argv[1]) == "help");
+    bool wants_send_help = false;
     for (int i = 1; i < argc; i++) {
       std::string arg = argv[i];
-      if (arg == "-h" || arg == "--help" || arg == "help")
-        wants_help = true;
+      if (arg == "-h" || arg == "--help") {
+        if (argc >= 2 && std::string(argv[1]) == "send")
+          wants_send_help = true;
+        else
+          wants_help = true;
+      }
+    }
+    if (wants_send_help) {
+      send_help();
+      return 0;
     }
     if (wants_help) {
       help();
@@ -704,10 +860,7 @@ int main(int argc, char **argv) {
                                "/daemon.log");
     }
     if (cmd == "send") {
-      if (argc != 3)
-        throw std::runtime_error("usage: meatcan send ID#HEX");
-      parse(argv[2]);
-      return request(d, "SEND " + std::string(argv[2]));
+      return send_command(d, argc, argv);
     }
     if (argc != 2)
       throw std::runtime_error("unexpected arguments");

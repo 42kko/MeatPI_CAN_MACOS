@@ -7,6 +7,7 @@ import time
 import json
 import shutil
 import sys
+import signal
 
 binary = os.path.abspath(sys.argv[1])
 runtime = tempfile.mkdtemp(prefix='meatcan-qa-', dir='/private/tmp')
@@ -37,6 +38,11 @@ try:
     check('help', run('--help').returncode == 0)
     check('short help', run('-h').returncode == 0)
     check('command short help', run('up', '-h').returncode == 0)
+    check(
+        'send short help',
+        'MeatCAN send\n\n' in run('send', '-h').stdout
+        and '--continuous' in run('send', '-h').stdout,
+    )
     check('version', run('--version').stdout.strip() == 'meatcan 0.1.0')
     check('absent daemon', run('status').returncode != 0)
     check('overflow bitrate rejected', run('up', '--mock', '--bitrate', '18446744073709552k').returncode != 0)
@@ -100,6 +106,43 @@ try:
     check('socket removed', not os.path.exists(runtime + '/daemon.sock'))
     check('restart', run('up', '--mock', '--bitrate', '25k').returncode == 0)
     check('restart resets counters', 'Frames      RX 0  |  TX 0' in run('status').stdout)
+    repeated = run('send', '-r', '3', '-i', '1ms', '321#0102')
+    check(
+        'repeat three frames',
+        repeated.returncode == 0
+        and 'Mode        repeat x3' in repeated.stdout
+        and 'Sent        3 frames' in repeated.stdout
+        and '|  TX 3' in run('status').stdout,
+    )
+    quiet = run('send', '--quiet', '--repeat', '2', '321#0102')
+    check('quiet repeated send', quiet.returncode == 0 and not quiet.stdout)
+    check('repeat counters', '|  TX 5' in run('status').stdout)
+    check(
+        'reject repeat with continuous',
+        run('send', '-c', '-r', '2', '321#01').returncode != 0,
+    )
+    check('reject zero repeat', run('send', '-r', '0', '321#01').returncode != 0)
+    check(
+        'reject invalid interval',
+        run('send', '-r', '2', '-i', 'fast', '321#01').returncode != 0,
+    )
+    continuous = subprocess.Popen(
+        [binary, 'send', '-c', '-i', '10ms', '321#01'],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    time.sleep(0.08)
+    continuous.send_signal(signal.SIGINT)
+    continuous_out, continuous_err = continuous.communicate(timeout=4)
+    check(
+        'continuous stops on interrupt',
+        continuous.returncode == 0
+        and 'Mode        continuous' in continuous_out
+        and 'MeatCAN TX stopped' in continuous_out
+        and not continuous_err,
+    )
     check('down again', run('down').returncode == 0)
     time.sleep(0.1)
     for mode, expected in [('drop', 'TX echo timeout'), ('mismatch', 'mismatched TX echo')]:

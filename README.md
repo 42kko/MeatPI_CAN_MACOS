@@ -1,5 +1,7 @@
 # meatcan
 
+[한국어](README.md) | [English](README.en.md)
+
 macOS에서 **MeatPi Ollie v2의 GS USB CAN 펌웨어**를 사용하는 C++ CLI입니다. libusb로 장치에 접근하며, macOS에 SocketCAN 네트워크 인터페이스를 만들지 않습니다.
 
 대상 장치: [MeatPi Ollie v2](https://github.com/meatpiHQ/meatpi_ollie_v2), USB ID `1209:2323`. SLCAN 시리얼 펌웨어는 지원하지 않습니다. 현재 범위는 Classic CAN 데이터 프레임(11/29비트 ID, 최대 8바이트)이며 CAN FD와 RTR은 지원하지 않습니다.
@@ -53,6 +55,29 @@ meatcan -h
 `send`는 16진수 CAN ID와 짝수 길이의 16진수 데이터(최대 16자리)를 받습니다. 빈 데이터는 `123#`입니다. 확장 ID 예시는 `1ABCDEFF#01020304`입니다. 송신은 장치의 고유 에코를 기다리며 성공은 종료 코드 `0`, 오류·타임아웃은 `1`입니다. 에코 타임아웃은 상대 애플리케이션의 처리 여부를 뜻하지 않으며, 완료가 불명확한 메시지를 자동 재전송하지 않습니다.
 
 송신이 성공하면 `MeatCAN TX complete`과 에코가 확인된 프레임을 출력합니다.
+
+### 반복·연속 송신
+
+```sh
+# 총 10회, 100 ms 간격으로 송신
+meatcan send -r 10 -i 100ms 123#01020304
+
+# Ctrl+C를 누를 때까지 1초마다 송신
+meatcan send -c -i 1s 123#01020304
+
+# 성공 출력 없이 100회 송신
+meatcan send -q -r 100 123#01020304
+
+# send 전용 도움말
+meatcan send -h
+```
+
+- `-r, --repeat <count>`: 지정한 총 횟수만큼 같은 프레임을 송신합니다.
+- `-c, --continuous`: `Ctrl+C`를 누를 때까지 계속 송신합니다. 간격을 생략하면 기본값은 100 ms입니다.
+- `-i, --interval <time>`: 프레임 간 간격입니다. `500us`, `100ms`, `1s` 형식을 지원합니다. 단위가 없으면 ms로 해석합니다.
+- `-q, --quiet`: 성공 메시지와 요약을 숨기고 오류는 계속 표시합니다.
+
+연속 송신은 CAN 버스 점유율을 높일 수 있습니다. 테스트 버스에서 시작하고 `-i`로 필요한 간격을 지정하세요.
 
 `State waiting`, `Adapter waiting`은 USB 장치 연결 또는 초기화 대기, `State ready`, `Adapter connected`는 USB/CAN 초기화 완료를 뜻합니다. `down`은 끄기 직전의 state, adapter, bitrate, 송수신 프레임 수와 마지막 오류를 출력합니다. `ready`는 선로의 정상 상태나 상대 연결까지 보장하지는 않습니다. 동일 장치를 사용하는 기존 Python 프로그램은 종료한 뒤 실행합니다.
 
