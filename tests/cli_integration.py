@@ -35,7 +35,16 @@ def raw(line):
 
 
 try:
-    check('help', run('--help').returncode == 0)
+    general_help = run('--help')
+    check('help', general_help.returncode == 0)
+    check(
+        'general help lists send options',
+        'Send options\n' in general_help.stdout
+        and '-r, --repeat <count>' in general_help.stdout
+        and '-c, --continuous' in general_help.stdout
+        and '-i, --interval <time>' in general_help.stdout
+        and '-q, --quiet' in general_help.stdout,
+    )
     check('short help', run('-h').returncode == 0)
     check('command short help', run('up', '-h').returncode == 0)
     check(
