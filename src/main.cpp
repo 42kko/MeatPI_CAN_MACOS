@@ -22,7 +22,6 @@ using Clock = std::chrono::steady_clock;
 static constexpr uint32_t listen_only_flag = 1u;
 static constexpr uint64_t active_probe_timeout = 100000;
 static constexpr useconds_t candidate_settle_us = 100000;
-static constexpr uint32_t probe_echo = 0u;
 static constexpr uint32_t probe_id = 0x80000000u | 0x1fffffffu;
 static volatile sig_atomic_t stopping = 0;
 static void stop_signal(int) { stopping = 1; }
@@ -145,12 +144,12 @@ class Usb {
 
 public:
   Usb() { usb_check(libusb_init(&ctx), "libusb_init"); }
-  ~Usb() {
+  ~Usb() noexcept {
     disconnect();
     libusb_exit(ctx);
   }
   bool connected() const { return h; }
-  void disconnect() {
+  void disconnect() noexcept {
     if (h) {
       if (claimed) {
         if (started) {
@@ -164,6 +163,22 @@ public:
     h = nullptr;
     claimed = false;
     started = false;
+  }
+  // Explicit callers must know whether CAN actually stopped. Always release
+  // USB resources, and do not repeat a failed STOP during destructor cleanup.
+  void disconnect_checked() {
+    try {
+      if (h && claimed && started) {
+        uint8_t mode[8]{};
+        control("stop CAN", 0x41, 2, mode, 8);
+      }
+    } catch (...) {
+      started = false;
+      disconnect();
+      throw;
+    }
+    started = false;
+    disconnect();
   }
   bool open(uint32_t rate, uint32_t mode_flags = 0) {
     libusb_device **list = nullptr;
@@ -770,23 +785,25 @@ static void append_rates(const std::string &value,
   }
 }
 static void scan_help() {
-  std::cout << "MeatCAN bitrate scan\n\n"
-               "Usage\n"
-               "  meatcan scan [options]\n\n"
-               "Options\n"
-               "  -r, --rates <list>       Candidate rates, comma-separated\n"
-               "      --rate <rate>        Add one candidate rate\n"
-               "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
-               "  -m, --min-frames <count> Valid frames required (default: 1)\n"
-               "      --passive            Listen without ACKs or Error Frames\n"
-               "      --active             Send one probe per rate; requires --rate(s)\n"
-               "  -h, --help               Show this help\n\n"
-               "Default rates\n"
-               "  500k,250k,125k,1m,800k,100k,50k,25k,20k,10k\n\n"
-               "Examples\n"
-               "  meatcan scan\n"
-               "  meatcan scan --passive --rates 125k,250k,500k\n"
-               "  meatcan scan --active --rate 500k\n";
+  std::cout
+      << "MeatCAN bitrate scan\n\n"
+         "Usage\n"
+         "  meatcan scan [options]\n\n"
+         "Options\n"
+         "  -r, --rates <list>       Candidate rates, comma-separated\n"
+         "      --rate <rate>        Add one candidate rate\n"
+         "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
+         "  -m, --min-frames <count> Valid frames required (default: 1)\n"
+         "      --passive            Listen without ACKs or Error Frames\n"
+         "      --active             Send one probe per rate; requires "
+         "--rate(s)\n"
+         "  -h, --help               Show this help\n\n"
+         "Default rates\n"
+         "  500k,250k,125k,1m,800k,100k,50k,25k,20k,10k\n\n"
+         "Examples\n"
+         "  meatcan scan\n"
+         "  meatcan scan --passive --rates 125k,250k,500k\n"
+         "  meatcan scan --active --rate 500k\n";
 }
 // Share the daemon's ownership lock, including between candidate bitrates.
 // The socket check alone would race daemon startup or a second scan.
@@ -821,8 +838,9 @@ static bool valid_scan_frame(const Frame &frame) {
   // A standard frame cannot contain arbitration bits outside its 11-bit ID.
   return (frame.id & 0x80000000u) || ((frame.id & 0x1fffffffu) <= 0x7ffu);
 }
-static bool valid_probe_echo(const Frame &frame) {
-  return frame.echo == probe_echo && frame.id == probe_id && frame.dlc == 0;
+static bool valid_probe_echo(const Frame &frame, const Frame &expected) {
+  return frame.echo == expected.echo && frame.id == expected.id &&
+         frame.dlc == expected.dlc;
 }
 static int scan_command(const std::string &d, int argc, char **argv) {
   std::vector<uint32_t> rates;
@@ -883,8 +901,9 @@ static int scan_command(const std::string &d, int argc, char **argv) {
   ScanLock ownership(d);
   std::cout << "MeatCAN bitrate scan\n\n"
             << "  Mode        "
-            << (active ? "active probe"
-                       : passive ? "listen-only" : "receive + ACK")
+            << (active    ? "active probe"
+                : passive ? "listen-only"
+                          : "receive + ACK")
             << '\n'
             << "  Candidates  " << rates.size() << '\n'
             << "  Window      "
@@ -892,20 +911,21 @@ static int scan_command(const std::string &d, int argc, char **argv) {
                                     : timeout)
             << " per bitrate\n"
             << "  Required    "
-            << (active ? "acknowledged probe" : std::to_string(minimum) +
-                                                      " valid frames")
+            << (active ? "acknowledged probe"
+                       : std::to_string(minimum) + " valid frames")
             << "\n\n";
   signal(SIGINT, stop_signal);
   signal(SIGTERM, stop_signal);
   Usb usb;
+  uint32_t next_probe_echo = 1;
   for (auto rate : rates) {
     if (stopping)
       break;
     if (!usb.open(rate, passive ? listen_only_flag : 0u))
       throw std::runtime_error("MeatPi USB adapter not found (1209:2323)");
+    Frame probe;
     if (active) {
-      Frame probe;
-      probe.echo = probe_echo;
+      probe.echo = next_probe_echo++;
       probe.id = probe_id;
       usb.send_frame(probe);
     }
@@ -916,13 +936,13 @@ static int scan_command(const std::string &d, int argc, char **argv) {
     while (!stopping && Clock::now() < deadline &&
            (active || frames < minimum) && !acknowledged) {
       for (const auto &frame : usb.read()) {
-        if (active && valid_probe_echo(frame))
+        if (active && valid_probe_echo(frame, probe))
           acknowledged = true;
         else if (valid_scan_frame(frame))
           frames++;
       }
     }
-    usb.disconnect();
+    usb.disconnect_checked();
     std::cout << "  " << grouped(std::to_string(rate)) << " bps  ";
     if (acknowledged)
       std::cout << "probe acknowledged";
@@ -933,13 +953,13 @@ static int scan_command(const std::string &d, int argc, char **argv) {
     std::cout << '\n';
     if (acknowledged || (!active && frames >= minimum)) {
       std::cout << "\nBitrate detected\n\n"
-                << "  Bitrate     " << grouped(std::to_string(rate)) << " bps\n";
+                << "  Bitrate     " << grouped(std::to_string(rate))
+                << " bps\n";
       if (acknowledged)
         std::cout << "  Probe       acknowledged\n";
       else
         std::cout << "  Frames      " << frames << '\n';
-      std::cout
-                << "  Start       meatcan up --bitrate " << rate << '\n';
+      std::cout << "  Start       meatcan up --bitrate " << rate << '\n';
       return 0;
     }
     // Ollie v2 firmware may stop responding when the next libusb session
@@ -993,7 +1013,8 @@ static void help() {
          "  -t, --timeout <time>     Listen at each rate (default: 1s)\n"
          "  -m, --min-frames <count> Valid frames required (default: 1)\n"
          "      --passive            Listen without ACKs or Error Frames\n"
-         "      --active             Send one probe per rate; requires --rate(s)\n\n"
+         "      --active             Send one probe per rate; requires "
+         "--rate(s)\n\n"
          "Examples\n"
          "  meatcan up --bitrate 25k\n"
          "  meatcan send 123#01020304\n"

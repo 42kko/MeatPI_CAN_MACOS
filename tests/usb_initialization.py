@@ -324,4 +324,41 @@ finally:
         first.wait()
     shutil.rmtree(runtime, ignore_errors=True)
 
+# STOP failures must abort before success output or another candidate OPEN.
+for active in [False, True]:
+    options = ['--rates', '25k,50k', '-t', '10ms']
+    extra = {'MEATCAN_SHIM_FAIL': 'STOP'}
+    if active:
+        options += ['--active']
+        extra['MEATCAN_SHIM_ACK_RATE'] = '25000'
+    else:
+        extra['MEATCAN_SHIM_RX'] = 'yes'
+    result, trace = scan_case(options, extra)
+    assert result.returncode == 1 and 'stop CAN' in result.stderr, result
+    assert 'Bitrate detected' not in result.stdout, result
+    assert trace.count('OPEN') == trace.count('STOP') == 1, trace
+    assert trace[-2:] == ['RELEASE', 'CLOSE'], trace
+    checks += 4
+
+# A delayed echo from the first candidate must not detect the second candidate.
+result, trace = scan_case(
+    ['--active', '--rates', '25k,50k,100k', '-t', '10ms'],
+    {'MEATCAN_SHIM_STALE_ECHO': '1', 'MEATCAN_SHIM_ACK_RATE': '100000',
+     'MEATCAN_SHIM_LOG_ECHO': '1'},
+)
+assert result.returncode == 0 and '100,000 bps  probe acknowledged' in result.stdout, result
+assert '50,000 bps  no probe echo' in result.stdout, result
+assert trace.count('OPEN') == trace.count('STOP') == trace.count('CLOSE') == 3, trace
+assert [x for x in trace if x.startswith('PROBE_ID ')] == ['PROBE_ID 1', 'PROBE_ID 2', 'PROBE_ID 3'], trace
+checks += 4
+
+for mismatch in ['echo', 'id', 'dlc']:
+    result, trace = scan_case(
+        ['--active', '--rate', '25k', '-t', '10ms'],
+        {'MEATCAN_SHIM_ACK_RATE': '25000', 'MEATCAN_SHIM_BAD_ECHO': mismatch},
+    )
+    assert result.returncode == 1 and 'Bitrate detected' not in result.stdout, (mismatch, result)
+    assert trace.count('STOP') == trace.count('CLOSE') == 1, trace
+    checks += 2
+
 print(f'{checks} USB initialization/cleanup checks passed; no physical USB calls')

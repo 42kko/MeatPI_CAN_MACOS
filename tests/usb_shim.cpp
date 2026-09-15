@@ -10,6 +10,8 @@ static uint32_t selected_rate = 0;
 static unsigned int emitted = 0;
 static bool probe_echo_pending = false;
 static unsigned char pending_probe[20]{};
+static unsigned char first_probe[20]{};
+static bool first_probe_saved = false;
 static uint32_t read32(const unsigned char *p) {
   return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 |
          uint32_t(p[3]) << 24;
@@ -124,10 +126,27 @@ int libusb_bulk_transfer(libusb_device_handle *, unsigned char endpoint,
   }
   if (endpoint == 0x02 && length == 20) {
     log("TX_PROBE");
+    if (std::getenv("MEATCAN_SHIM_LOG_ECHO"))
+      log(("PROBE_ID " + std::to_string(read32(data))).c_str());
     const char *ack_rate = std::getenv("MEATCAN_SHIM_ACK_RATE");
     if (ack_rate && selected_rate == std::strtoul(ack_rate, nullptr, 10)) {
       std::memcpy(pending_probe, data, sizeof(pending_probe));
       probe_echo_pending = true;
+      const char *mismatch = std::getenv("MEATCAN_SHIM_BAD_ECHO");
+      if (mismatch && std::strcmp(mismatch, "echo") == 0)
+        pending_probe[0] ^= 0x80;
+      if (mismatch && std::strcmp(mismatch, "id") == 0)
+        pending_probe[4] ^= 1;
+      if (mismatch && std::strcmp(mismatch, "dlc") == 0)
+        pending_probe[8] = 1;
+    } else if (std::getenv("MEATCAN_SHIM_STALE_ECHO")) {
+      if (!first_probe_saved) {
+        std::memcpy(first_probe, data, sizeof(first_probe));
+        first_probe_saved = true;
+      } else {
+        std::memcpy(pending_probe, first_probe, sizeof(pending_probe));
+        probe_echo_pending = true;
+      }
     }
     *transferred = length;
     return 0;
