@@ -1,0 +1,25 @@
+name: macOS build and test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake libusb
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test without hardware
+        run: ctest --test-dir build --output-on-failure
+      - name: Verify install
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/meatcan-install"
+          "$RUNNER_TEMP/meatcan-install/bin/meatcan" --version
+          "$RUNNER_TEMP/meatcan-install/bin/meatcan" --help
