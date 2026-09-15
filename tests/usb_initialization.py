@@ -62,4 +62,37 @@ for fail, stage in failure_cases:
             daemon.kill()
             daemon.wait()
         shutil.rmtree(runtime, ignore_errors=True)
+
+runtime = tempfile.mkdtemp(prefix='meatcan-usb-status-', dir='/private/tmp')
+os.chmod(runtime, 0o700)
+env = {
+    **os.environ,
+    'MEATCAN_RUNTIME_DIR': runtime,
+    'MEATCAN_SHIM_LOG': str(pathlib.Path(runtime) / 'usb.log'),
+    'MEATCAN_SHIM_FAIL': 'CAPS',
+}
+try:
+    up = subprocess.run(
+        [binary, 'up', '--bitrate', '25k'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert up.returncode == 0, up.stderr
+    assert 'state=waiting adapter=waiting bitrate=25000' in up.stdout, up.stdout
+    checks += 2
+    down = subprocess.run(
+        [binary, 'down'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert down.returncode == 0, down.stderr
+    assert 'previous_state=waiting adapter=waiting bitrate=25000' in down.stdout
+    checks += 2
+finally:
+    shutil.rmtree(runtime, ignore_errors=True)
+
 print(f'{checks} USB initialization/cleanup checks passed; no physical USB calls')

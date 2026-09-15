@@ -38,8 +38,18 @@ try:
     check('version', run('--version').stdout.strip() == 'meatcan 0.1.0')
     check('absent daemon', run('status').returncode != 0)
     check('overflow bitrate rejected', run('up', '--mock', '--bitrate', '18446744073709552k').returncode != 0)
-    check('up mock', run('up', '--mock', '--bitrate', '500k').returncode == 0)
-    check('ready status', 'state=ready bitrate=500000 mock=yes' in run('status').stdout)
+    up = run('up', '--mock', '--bitrate', '500k')
+    check('up mock', up.returncode == 0)
+    check('up reports daemon', 'meatcan daemon started (MOCK)' in up.stdout)
+    check(
+        'up reports connected state',
+        'state=ready adapter=connected bitrate=500000 mock=yes' in up.stdout,
+    )
+    check(
+        'ready status',
+        'state=ready adapter=connected bitrate=500000 mock=yes'
+        in run('status').stdout,
+    )
     check('duplicate up', run('up', '--mock').returncode != 0)
     subscribers = [raw(b'DUMP\n') for i in range(2)]
     for s in subscribers:
@@ -66,7 +76,13 @@ try:
     s = raw(b'x' * 300 + b'\n')
     check('oversized IPC command', s.recv(200).startswith(b'ERR '))
     s.close()
-    check('down', run('down').returncode == 0)
+    down = run('down')
+    check('down', down.returncode == 0)
+    check(
+        'down reports previous state',
+        'CAN stopped: previous_state=ready adapter=connected bitrate=500000'
+        in down.stdout,
+    )
     time.sleep(0.1)
     check('socket removed', not os.path.exists(runtime + '/daemon.sock'))
     check('restart', run('up', '--mock', '--bitrate', '25k').returncode == 0)

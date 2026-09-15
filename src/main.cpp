@@ -201,20 +201,24 @@ static int daemon_main(const std::string &d, uint32_t rate, bool mock) {
   signal(SIGINT, stop_signal);
   int lock =
       open((d + "/daemon.lock").c_str(), O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
-  if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) < 0) {
-    if (lock >= 0)
-      close(lock);
-    return 1;
+  if (lock < 0)
+    throw std::runtime_error("cannot open daemon lock: " +
+                             std::string(strerror(errno)));
+  if (flock(lock, LOCK_EX | LOCK_NB) < 0) {
+    auto error = std::string(strerror(errno));
+    close(lock);
+    throw std::runtime_error("cannot lock daemon: " + error);
   }
   auto a = address(d);
   unlink(a.sun_path);
   int server = socket(AF_UNIX, SOCK_STREAM, 0);
   if (server < 0 || bind(server, reinterpret_cast<sockaddr *>(&a), sizeof(a)) ||
       listen(server, 32)) {
+    auto error = std::string(strerror(errno));
     if (server >= 0)
       close(server);
     close(lock);
-    return 1;
+    throw std::runtime_error("cannot create daemon socket: " + error);
   }
   fcntl(server, F_SETFL, O_NONBLOCK);
   std::map<int, Client> clients;
@@ -321,13 +325,24 @@ static int daemon_main(const std::string &d, uint32_t rate, bool mock) {
             c.in.clear();
             if (cmd == "STATUS") {
               reply(c.fd, "OK state=" + state +
+                              " adapter=" +
+                              (state == "ready" ? "connected" : "waiting") +
                               " bitrate=" + std::to_string(rate) +
                               " mock=" + (mock ? "yes" : "no") + " rx=" +
                               std::to_string(rx) + " tx=" + std::to_string(tx) +
                               " slow_subscribers=" + std::to_string(dropped) +
                               " last_error=" + last_error);
             } else if (cmd == "DOWN") {
-              reply(c.fd, "OK");
+              auto previous_state = state;
+              auto previous_adapter =
+                  state == "ready" ? "connected" : "waiting";
+              usb.disconnect();
+              state = "stopped";
+              reply(c.fd, "OK previous_state=" + previous_state +
+                              " adapter=" + previous_adapter + " bitrate=" +
+                              std::to_string(rate) + " rx=" +
+                              std::to_string(rx) + " tx=" +
+                              std::to_string(tx) + " last_error=" + last_error);
               stopping = 1;
             } else if (cmd == "DUMP") {
               c.subscriber = true;
@@ -503,6 +518,21 @@ static int request(const std::string &d, const std::string &cmd,
       if (!stream) {
         if (cmd == "STATUS")
           std::cout << line.substr(3) << '\n';
+        else if (cmd == "DOWN") {
+          auto stopped = line.substr(3);
+          close(fd);
+          auto socket_path = d + "/daemon.sock";
+          for (int i = 0; i < 200; i++) {
+            struct stat socket_status {};
+            if (lstat(socket_path.c_str(), &socket_status) < 0 &&
+                errno == ENOENT) {
+              std::cout << "CAN stopped: " << stopped << '\n';
+              return 0;
+            }
+            usleep(10000);
+          }
+          throw std::runtime_error("daemon did not finish stopping");
+        }
         close(fd);
         return 0;
       }
@@ -600,9 +630,9 @@ int main(int argc, char **argv) {
         int fd = connect_to(d);
         if (fd >= 0) {
           close(fd);
-          std::cout << "meatcan daemon started at " << rate << " bps"
-                    << (mock ? " (MOCK)" : "; waiting for adapter") << "\n";
-          return 0;
+          std::cout << "meatcan daemon started"
+                    << (mock ? " (MOCK)" : "") << "\n";
+          return request(d, "STATUS");
         }
         usleep(20000);
       }
